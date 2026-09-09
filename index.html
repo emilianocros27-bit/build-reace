@@ -237,7 +237,7 @@
   #garage.gone { opacity: 0; visibility: hidden; pointer-events: none; }
   .garage-content { width: min(960px, 100%); }
   #garage h1 { font-family: "Chakra Petch", sans-serif; letter-spacing: .15em; color: var(--amber); text-align: center; font-size: 24px; margin: 0 0 24px; }
-  .car-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+  .car-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; max-width: 640px; margin: 0 auto; }
   .car-card { padding: 20px; border: 1px solid var(--ink-faint); background: #151b23; color: var(--ink); text-align: left; cursor: pointer; font: inherit; }
   .car-card:hover, .car-card:focus-visible { border-color: var(--amber); outline: 2px solid var(--amber); outline-offset: 3px; }
   .car-card.selected { box-shadow: inset 0 0 0 2px var(--signal); }
@@ -1671,24 +1671,22 @@
   var BASE_FEEL = Object.assign({}, FEEL);
   var CARS = [
     { build: buildAguila, wheel: { front: { width: 0.36, radius: 0.42 }, rear: { width: 0.36, radius: 0.42 } },
-      id: "aguila", name: "ÁGUILA", tag: "Equilibrado. Bueno en todo, sin sorpresas.",
+      id: "aguila", name: "ÁGUILA", tag: "Monoplaza equilibrado. Rápido y preciso en asfalto.",
       stats: { vel: 3, agarre: 3, manejo: 3 },
       colors: { body: 0xe23c2e, accent: 0x1c1f26, rim: 0xc6cbd2 },
-      phys: { mass: 170, peakTq: 36, limiter: 7000, final: 5.2, gears: [3.6, 2.25, 1.62, 1.26, 1.04, 0.87] }, feel: {} },
-    { build: buildToro, wheel: { front: { width: 0.4, radius: 0.42 }, rear: { width: 0.5, radius: 0.42 } },
-      id: "toro", name: "TORO", tag: "Potencia bruta. Se va de atrás si te pasas con el gas.",
-      stats: { vel: 4, agarre: 2, manejo: 2 },
-      colors: { body: 0xf5a623, accent: 0x201a10, rim: 0x3a3a3a },
-      phys: { mass: 200, peakTq: 46, limiter: 7300, final: 4.95, gears: [3.4, 2.15, 1.56, 1.24, 1.03, 0.85] },
-      feel: { FRONT_GRIP: 0.95, REAR_GRIP: 0.93, REAR_STIFF: 33, YAW_CATCH: 0.45, COUNTER_GAIN: 0.26, STEER_RATE: 7, STEER_LAG: 11 } },
-    { build: buildLince, wheel: { front: { width: 0.26, radius: 0.4 }, rear: { width: 0.26, radius: 0.4 } },
-      id: "lince", name: "LINCE", tag: "Ligero y pegado al suelo. Entra clavado, perdona errores.",
-      stats: { vel: 2, agarre: 4, manejo: 4 },
-      colors: { body: 0x21b8a6, accent: 0x0d2b28, rim: 0xe6ebf0 },
-      phys: { mass: 150, peakTq: 30, limiter: 7200, final: 5.5, gears: [3.95, 2.5, 1.82, 1.42, 1.16, 1.0] },
-      feel: { FRONT_GRIP: 1.08, REAR_GRIP: 1.12, FRONT_STIFF: 46, REAR_STIFF: 40, STEER_RATE: 10, STEER_LAG: 7, YAW_CATCH: 0.95, COUNTER_GAIN: 0.4, FRONT_COMP: 6.8, REAR_COMP: 5.6 } }
+      phys: { mass: 170, peakTq: 36, limiter: 7000, final: 5.2, gears: [3.6, 2.25, 1.62, 1.26, 1.04, 0.87],
+        rest: 0.42, travelF: 0.36, travelR: 0.30, rideDrop: 0 }, feel: {} },
+    { build: buildJeep, wheel: { front: { width: 0.34, radius: 0.52 }, rear: { width: 0.34, radius: 0.52 } },
+      id: "jeep", name: "JEEP", tag: "4x4 real. Suspensión de mucho recorrido, trepa de todo. Lento pero imparable.",
+      stats: { vel: 1, agarre: 3, manejo: 2 },
+      colors: { body: 0xb63a2f, accent: 0x181818, rim: 0x2b2b2b },
+      phys: { mass: 235, peakTq: 42, limiter: 5600, final: 6.6, gears: [4.7, 2.8, 1.85, 1.36, 1.05, 0.86],
+        rest: 0.55, travelF: 0.66, travelR: 0.62, rideDrop: 0.5 },
+      feel: { FRONT_GRIP: 1.02, REAR_GRIP: 1.05, FRONT_STIFF: 24, REAR_STIFF: 22,
+        FRONT_COMP: 4.6, REAR_COMP: 4.2, FRONT_RELAX: 3.9, REAR_RELAX: 3.6,
+        FRONT_ROLL: 0.05, REAR_ROLL: 0.055, STEER_RATE: 6, STEER_LAG: 12, YAW_CATCH: 0.9, KERB_ACCEL: 0.9 } }
   ];
-  var currentCar = CARS[0], garageOpen = true;
+  var currentCar = CARS[0], garageOpen = true, carRideDrop = 0;
   var driftFactor = 0;
   var driveFeel = { steerDemand: 0, counter: 0, powerSlip: 0, rearSlip: 0, lateral: 0,
     speed: 0, kmh: 0, accel: 0, prevForward: null, impact: 0, kerb: 0, kerbPhase: 0,
@@ -1802,45 +1800,67 @@
   part3(0.4, 0.12, 0.06, brakeMat, -0.6, 0.2, -2.02);
   }
 
-  function buildToro(g, part3) {
-    part3(2.15, 0.40, 2.95, carPaint, 0, 0.30, -0.15);
-    part3(1.75, 0.30, 1.15, carPaint, 0, 0.25, 1.50);
-    part3(1.22, 0.25, 0.95, glass, 0, 0.55, 0.12);
-    part3(0.5, 0.5, 0.7, carPaint, 0, 0.65, -0.45);
-    part3(0.28, 0.28, 0.5, carAccent, 0, 0.70, -0.05);
-    part3(0.55, 0.4, 0.26, carAccent, 0, 0.59, -0.52);
-    part3(2.35, 0.06, 0.52, carAccent, 0, 0.52, -1.85);
-    part3(2.35, 0.06, 0.52, carAccent, 0, 0.78, -1.85);
-    part3(1.65, 0.05, 0.30, carAccent, 0, -0.02, 2.12);
-    part3(0.8, 0.07, 0.18, carAccent, 0, 0.02, 2.22);
+  /* Jeep Wrangler JL, 2-door — boxy, tall, lifted. The whole body sits high above
+     the axle line (y=0) so there is a big lifted-suspension gap over each tyre. */
+  function buildJeep(g, part3) {
+    var L = 0.72;   // body lift: everything rides this much above the axle centre
+    /* skid plate / diff line, low and narrow between the wheels */
+    part3(0.9, 0.14, 2.6, carAccent, 0, L - 0.44, -0.05);
+    /* main body tub */
+    part3(1.78, 0.62, 3.25, carPaint, 0, L + 0.25, -0.1);
+    /* flat clamshell hood + power dome */
+    part3(1.68, 0.10, 1.3, carPaint, 0, L + 0.55, 1.28);
+    part3(0.66, 0.09, 0.8, carPaint, 0, L + 0.63, 1.34);
+    /* near-vertical windshield frame + glass */
+    part3(1.58, 0.62, 0.09, carPaint, 0, L + 0.95, 0.66, -0.2);
+    part3(1.42, 0.5, 0.03, glass, 0, L + 0.93, 0.64, -0.2);
+    /* hard top + rain gutters */
+    part3(1.6, 0.5, 1.8, carPaint, 0, L + 1.24, -0.45);
+    part3(1.66, 0.05, 1.9, carAccent, 0, L + 1.50, -0.45);
+    /* rear panel + tailgate */
+    part3(1.74, 0.64, 0.14, carPaint, 0, L + 0.26, -1.74);
+    /* front grille block + 7 slots + round headlights */
+    part3(1.24, 0.5, 0.12, carAccent, 0, L + 0.5, 1.92);
+    for (var s = 0; s < 7; s++) {
+      part3(0.1, 0.4, 0.05, carPaint, (s - 3) * 0.165, L + 0.5, 1.97);
+    }
     [-1, 1].forEach(function (side) {
-      part3(0.55, 0.38, 1.7, carPaint, side * 1.06, 0.14, -0.05);
-      part3(0.34, 0.30, 1.5, carPaint, side * 0.95, 0.27, -0.15);
-      part3(0.10, 0.62, 0.56, carAccent, side * 1.05, 0.52, -1.85);
-      part3(0.38, 0.12, 0.06, headMat, side * 0.57, 0.26, 2.10);
-      part3(0.44, 0.10, 0.06, brakeMat, side * 0.60, 0.26, -1.66);
-      var exhaust = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 0.3, 12), carAccent);
-      exhaust.rotation.x = Math.PI / 2; exhaust.position.set(side * 0.2, 0.12, -2.05);
-      exhaust.castShadow = exhaust.receiveShadow = true; g.add(exhaust);
+      var hl = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.14, 0.06, 14), headMat);
+      hl.rotation.x = Math.PI / 2; hl.position.set(side * 0.7, L + 0.5, 1.97);
+      hl.castShadow = hl.receiveShadow = true; g.add(hl);
+      /* square flared fenders standing proud, arching high over each tyre */
+      part3(0.54, 0.16, 1.1, carAccent, side * 0.99, L + 0.02, 1.35);
+      part3(0.54, 0.16, 1.1, carAccent, side * 0.99, L + 0.02, -1.4);
+      /* rocker rails / side steps */
+      part3(0.16, 0.12, 2.3, carAccent, side * 0.92, L - 0.18, -0.05);
+      /* door body sides */
+      part3(0.06, 0.5, 1.5, carPaint, side * 0.9, L + 0.3, 0.15);
+      /* mirror on the A-pillar */
+      part3(0.09, 0.12, 0.22, carAccent, side * 1.0, L + 0.7, 0.55);
+      /* tail lights */
+      part3(0.16, 0.32, 0.05, brakeMat, side * 0.66, L + 0.32, -1.8);
     });
-  }
-
-  function buildLince(g, part3) {
-    part3(1.5, 0.26, 3.05, carPaint, 0, 0.16, -0.10);
-    part3(0.85, 0.16, 2.0, carPaint, 0, 0.04, 1.7, -0.14);
-    part3(1.0, 0.22, 1.15, glass, 0, 0.30, 0.1);
-    part3(0.9, 0.24, 0.05, glass, 0, 0.34, 0.68, -0.55);
-    part3(0.05, 0.34, 1.5, carPaint, 0, 0.42, -0.95);
-    part3(1.4, 0.22, 1.25, carPaint, 0, 0.10, -1.4);
-    part3(0.25, 0.16, 0.42, carPaint, 0, 0.31, -0.45, 0.18);
-    part3(1.5, 0.04, 0.26, carAccent, 0, 0.32, -1.9);
-    part3(1.3, 0.03, 0.22, carAccent, 0, -0.08, 2.55);
-    [-1, 1].forEach(function (side) {
-      part3(0.20, 0.22, 1.3, carPaint, side * 0.72, 0.12, -0.1);
-      part3(0.04, 0.18, 0.14, carAccent, side * 0.48, 0.22, -1.9);
-      part3(0.16, 0.07, 0.05, headMat, side * 0.28, 0.02, 2.62);
-      part3(0.24, 0.06, 0.05, brakeMat, side * 0.4, 0.13, -2.04);
-    });
+    /* chunky steel bumpers */
+    part3(1.94, 0.2, 0.32, carAccent, 0, L - 0.02, 2.0);
+    part3(1.94, 0.2, 0.3, carAccent, 0, L - 0.02, -1.88);
+    /* winch on the front bumper */
+    part3(0.36, 0.24, 0.24, carAccent, 0, L + 0.04, 2.16);
+    /* A-pillars */
+    part3(0.08, 0.7, 0.08, carAccent, 0.76, L + 0.96, 0.6, -0.2);
+    part3(0.08, 0.7, 0.08, carAccent, -0.76, L + 0.96, 0.6, -0.2);
+    /* full-size spare on the swing gate */
+    (function () {
+      var spare = new THREE.Group();
+      var t = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.5, 0.3, 22), tyreMat);
+      t.rotation.x = Math.PI / 2; spare.add(t);
+      var r = new THREE.Mesh(new THREE.CylinderGeometry(0.26, 0.26, 0.32, 16), rimMat);
+      r.rotation.x = Math.PI / 2; spare.add(r);
+      spare.position.set(0.14, L + 0.4, -1.98);
+      spare.traverse(function (m) { m.castShadow = m.receiveShadow = true; });
+      g.add(spare);
+    })();
+    /* snorkel up the passenger A-pillar */
+    part3(0.11, 1.05, 0.11, carAccent, 0.95, L + 0.6, 0.86);
   }
 
   function buildWheel(g, mkMesh, opts) {
@@ -1905,6 +1925,7 @@
     PEAK_TQ = spec.phys.peakTq; LIMITER = spec.phys.limiter;
     FINAL = spec.phys.final; GEARS = spec.phys.gears.slice();
     Object.assign(FEEL, BASE_FEEL, spec.feel);
+    var pv = spec.phys;
     for (var i = 0; i < 4; i++) {
       var wi = vehicle.wheelInfos[i], front = wi.chassisConnectionPointLocal.z > 0;
       wi.frictionSlip = BASE_SLIP * (front ? FEEL.FRONT_GRIP : FEEL.REAR_GRIP);
@@ -1912,7 +1933,12 @@
       wi.dampingCompression = front ? FEEL.FRONT_COMP : FEEL.REAR_COMP;
       wi.dampingRelaxation = front ? FEEL.FRONT_RELAX : FEEL.REAR_RELAX;
       wi.rollInfluence = front ? FEEL.FRONT_ROLL : FEEL.REAR_ROLL;
+      wi.radius = (front ? spec.wheel.front : spec.wheel.rear).radius;
+      wi.suspensionRestLength = pv.rest != null ? pv.rest : REST;
+      wi.maxSuspensionTravel = front ? (pv.travelF != null ? pv.travelF : 0.36)
+                                     : (pv.travelR != null ? pv.travelR : 0.30);
     }
+    carRideDrop = pv.rideDrop || 0;
     carPaint.color.setHex(spec.colors.body);
     carAccent.color.setHex(spec.colors.accent);
     rimMat.color.setHex(spec.colors.rim);
@@ -1945,16 +1971,25 @@
     CARS.forEach(function (spec) {
       var card = document.createElement("button"); card.type = "button"; card.className = "car-card";
       var body = hex(spec.colors.body), accent = hex(spec.colors.accent), rim = hex(spec.colors.rim);
-      var silhouette;
-      if (spec.id === "toro") {
-        silhouette = '<path d="M20 38H119V57H134V65H20Z M54 38V22H79V38Z" fill="' + body + '"/><path d="M12 17H44V23H12Z M12 29H44V35H12Z M17 23H22V51H17Z M124 63H142V67H124Z" fill="' + accent + '"/><circle cx="38" cy="62" r="15" fill="#101318"/><circle cx="115" cy="62" r="12" fill="#101318"/>';
-      } else if (spec.id === "lince") {
-        silhouette = '<path d="M20 49H84L144 62H20Z M34 49V21L66 49Z M66 49L76 36H91L109 53Z" fill="' + body + '"/><path d="M16 39H42V42H16Z M23 42H26V53H23Z M121 63H145V65H121Z" fill="' + accent + '"/><ellipse cx="38" cy="63" rx="10" ry="11" fill="#101318"/><ellipse cx="115" cy="63" rx="9" ry="11" fill="#101318"/>';
+      var silhouette, hub;
+      if (spec.id === "jeep") {
+        /* tall boxy 4x4 with a big lift: fat tyres, big wheel gap, spare on the back */
+        silhouette = '<rect x="26" y="24" width="86" height="30" fill="' + body + '"/>' +
+          '<rect x="30" y="14" width="58" height="12" fill="' + body + '"/>' +
+          '<rect x="36" y="16" width="46" height="9" fill="#0b0f14"/>' +
+          '<path d="M112 26H128V40H112Z" fill="' + body + '"/>' +
+          '<rect x="20" y="46" width="14" height="9" fill="' + accent + '"/>' +
+          '<rect x="118" y="46" width="14" height="9" fill="' + accent + '"/>' +
+          '<rect x="122" y="24" width="6" height="18" fill="' + accent + '"/>' +
+          '<circle cx="122" cy="33" r="9" fill="#0b0f14"/>' +
+          '<circle cx="40" cy="66" r="16" fill="#0b0f14"/><circle cx="104" cy="66" r="16" fill="#0b0f14"/>';
+        hub = '<circle cx="40" cy="66" r="6" fill="' + rim + '"/><circle cx="104" cy="66" r="6" fill="' + rim + '"/>';
       } else {
         silhouette = '<rect x="20" y="42" width="92" height="18" fill="' + body + '"/><path d="M94 42L133 53L136 60H94Z M47 42L59 29H83L99 42Z" fill="' + body + '"/><path d="M17 30H39V35H17Z M24 35H28V46H24Z M118 59H140V63H118Z" fill="' + accent + '"/><circle cx="38" cy="61" r="12" fill="#101318"/><circle cx="115" cy="61" r="12" fill="#101318"/>';
+        hub = '<circle cx="38" cy="61" r="6" fill="' + rim + '"/><circle cx="115" cy="61" r="6" fill="' + rim + '"/>';
       }
       card.innerHTML = '<span class="car-name" role="heading" aria-level="2">' + spec.name + '</span>' +
-        '<svg viewBox="0 0 150 86" aria-hidden="true">' + silhouette + '<circle cx="38" cy="62" r="6" fill="' + rim + '"/><circle cx="115" cy="62" r="6" fill="' + rim + '"/></svg>' +
+        '<svg viewBox="0 0 150 86" aria-hidden="true">' + silhouette + hub + '</svg>' +
         '<span class="car-tag">' + spec.tag + '</span>';
       [["VELOCIDAD", "vel"], ["AGARRE", "agarre"], ["MANEJO", "manejo"]].forEach(function (stat) {
         var n = spec.stats[stat[1]], pips = "";
@@ -1966,8 +2001,8 @@
     });
     garage.addEventListener("keydown", function (e) {
       if (e.key !== "Tab") return;
-      var i = carCards.indexOf(document.activeElement);
-      e.preventDefault(); carCards[(i + (e.shiftKey ? 2 : 1)) % 3].focus();
+      var i = carCards.indexOf(document.activeElement), n = carCards.length;
+      e.preventDefault(); carCards[(i + (e.shiftKey ? n - 1 : 1) + n) % n].focus();
     });
     var saved; try { saved = localStorage.getItem("ty.car"); } catch (e) {}
     applyCar(CARS.filter(function (spec) { return spec.id === saved; })[0] || CARS[0]);
@@ -2096,7 +2131,7 @@
 
   function resetCar() {
     placeCar(CL[startIdx][0] - startDir.x * 8, CL[startIdx][1] - startDir.z * 8,
-      Math.atan2(startDir.x, startDir.z), EL[startIdx] + 1.7);
+      Math.atan2(startDir.x, startDir.z), EL[startIdx] + 1.7 + carRideDrop);
     engineRPM = freeRPM = IDLE; gear = mode === "MANUAL" ? gear : 1; thr = brk = 0;
     resetRace();
   }
