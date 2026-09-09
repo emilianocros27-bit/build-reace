@@ -438,29 +438,29 @@
     [-150, 75], [-150, 8.9], [-150, -30.8],
     [-150, -70.6], [-150, -74.6], [-150, -114.2],
     // T1 complex: cleaned transition from the straight
-    [-145, -153.8], [-100.3, -177.8], [-94.1, -178.5],
-    [-92.3, -182.1], [-83.3, -187.1], [-76.8, -185.9],
-    [-65.3, -182.3], [-54.4, -177.4], [-44.1, -171.3],
+    [-140.04, -151.85], [-105.11, -174.89], [-94.65, -178.86],
+    [-91.4, -182.27], [-83.61, -186.32], [-76.17, -185.6],
+    [-65.37, -182.14], [-54.47, -177.25], [-41.1, -169.49],
     // back straight
-    [-9.8, -150.7], [24.4, -129.8], [54.7, -126],
+    [-9.81, -150.66], [24.07, -132.79], [55.78, -132.82],
     // far hairpin and return
-    [61.2, -125.5], [63.6, -122.3], [75.4, -104.8],
-    [70.4, -99.4], [66.4, -99.7], [54.5, -101.2],
-    [33.4, -104], [-3.4, -101.3],
+    [63.3, -133.05], [69.46, -124.53], [77.74, -103.31],
+    [74.87, -93.76], [68.01, -91.37], [54.81, -93.83],
+    [31.16, -99.98], [-0.07, -98.81],
     // esses
-    [-9.9, -91.2], [-16.4, -86.6], [-20.2, -85.3],
-    [-26, -82.1], [-31.1, -76.1], [-32.5, -72.3],
-    [-34.2, -61.8], [-37.3, -40.7], [-39.7, -37.5],
-    [-47.1, -34.7], [-63, -22.2], [-78.7, 14.3],
-    [-80.4, 26.2],
+    [-10.08, -91.74], [-16.06, -87.01], [-20.45, -85.06],
+    [-25.91, -81.75], [-30.64, -76.37], [-32.54, -71.46],
+    [-34.37, -60.47], [-37.21, -42.94], [-40.33, -37.55],
+    [-48.16, -33.49], [-62.97, -19.2], [-76.95, 11.23],
+    [-79.94, 28.78],
     // Foro Sol approach: taper east into the infield
     [-78.43, 58.7], [-86.17, 89.9],
     // Foro Sol hairpin: shifted east for bowl clearance
-    [-108, 101.9], [-101.6, 105], [-103.8, 112.4],
+    [-105.25, 101.9], [-101.6, 105], [-103.8, 112.4],
     [-105, 120.2],
     // Peraltada and straight rejoin
-    [-121.7, 130.7], [-130.3, 128.9], [-140.8, 125.2],
-    [-150.5, 120.5], [-154, 113.3], [-154.5, 105.4],
+    [-121.7, 130.7], [-130.54, 128.66], [-140.7, 125.08],
+    [-149.72, 120.19], [-153.62, 113.21], [-154.5, 105.4],
     [-150, 98.8], [-150, 94.8]
   ];
   for (var w0 = 0; w0 < WP.length; w0++) { WP[w0][0] *= TSCALE; WP[w0][1] *= TSCALE; }
@@ -2233,6 +2233,7 @@
 
   /* ================= main loop ================= */
   var cl = new THREE.Clock(), steerNow = 0, bootHidden = false, stuckTimer = 0, prevGrounded = 4;
+  var wheelDown = [true, true, true, true];
   resetCar();
   try { window.__DBG = { world: world, vehicle: vehicle, chassis: chassisBody, CL: CL, EL: EL, HW: HW, N: N, wallBodies: wallBodies, placeCar: placeCar, startDir: startDir, GROUND_Y: GROUND_Y, scene: scene, camera: camera, renderer: renderer, carMesh: carMesh, SHOULDER: (typeof SHOULDER !== "undefined" ? SHOULDER : 1.8), startIdx: (typeof startIdx !== "undefined" ? startIdx : 0) }; } catch (e) {}
   try {
@@ -2405,7 +2406,7 @@
     var onKerb = 0;
     for (var kw = 0; kw < 4; kw++) {
       var ki = vehicle.wheelInfos[kw], hit = ki.raycastResult && ki.raycastResult.hitPointWorld;
-      if (ki.isInContact && hit && kerbAt(hit.x, hit.z)) onKerb++;
+      if (wheelDown[kw] && hit && kerbAt(hit.x, hit.z)) onKerb++;
     }
     var kerbTarget = speed > 2 ? onKerb / 4 * Math.min(speed / 12, 1) : 0;
     driveFeel.kerb += (kerbTarget - driveFeel.kerb) * (1 - Math.exp(-dt * 12));
@@ -2420,6 +2421,7 @@
     /* ---- step ---- */
     _prevPos.copy(chassisBody.position); impactBefore.copy(chassisBody.velocity);
     world.step(1 / 60, dt, 8);
+    for (var wd = 0; wd < 4; wd++) wheelDown[wd] = vehicle.wheelInfos[wd].isInContact;
 
     /* ---- solid barrier: a continuous soft clamp against the visible wall face.
        Runs every frame (no jump gate) so the car settles flush against the wall and
@@ -2453,7 +2455,7 @@
     /* ---- braking: hold the body flat (kill pitch/roll rate, not yaw) ---- */
     if (braking) {
       var gB = 0;
-      for (var gb = 0; gb < 4; gb++) if (vehicle.wheelInfos[gb].isInContact) gB++;
+      for (var gb = 0; gb < 4; gb++) if (wheelDown[gb]) gB++;
       if (gB >= 1) { chassisBody.angularVelocity.x *= 0.6; chassisBody.angularVelocity.z *= 0.6; }
     }
 
@@ -2463,7 +2465,7 @@
        and steering (yaw) are untouched.  Airborne, it stays free for jumps; a big
        tumble on landing is nudged upright. ---- */
     var gNow = 0;
-    for (var gi = 0; gi < 4; gi++) if (vehicle.wheelInfos[gi].isInContact) gNow++;
+    for (var gi = 0; gi < 4; gi++) if (wheelDown[gi]) gNow++;
     var cq = chassisBody.quaternion;
     var qT = _qA.set(cq.x, cq.y, cq.z, cq.w);
     var fW = _vA.set(0, 0, 1).applyQuaternion(qT);
@@ -2493,7 +2495,7 @@
     driveFeel.rearSlip = Math.atan2(driveFeel.lateral - chassisBody.angularVelocity.y * 1.4, Math.max(Math.abs(postForward), 3));
     var losses = [0, 0], rearContact = 0;
     for (var rs = 0; rs < 2; rs++) {
-      var ri = rs + 2, rw = vehicle.wheelInfos[ri]; if (!rw.isInContact) continue; rearContact++;
+      var ri = rs + 2, rw = vehicle.wheelInfos[ri]; if (!wheelDown[ri]) continue; rearContact++;
       var skid = typeof rw.skidInfo === "number" && isFinite(rw.skidInfo) ? clamp(1 - rw.skidInfo, 0, 1) : 0;
       var sideJ = vehicle.sideImpulse ? vehicle.sideImpulse[ri] : rw.sideImpulse;
       var use = typeof sideJ === "number" && isFinite(sideJ) ? clamp(Math.abs(sideJ) / Math.max(1, rw.suspensionForce / 60 * rw.frictionSlip), 0, 1) : 0;
@@ -2529,7 +2531,7 @@
       wheelMeshes[w].position.copy(t.position);
       wheelMeshes[w].quaternion.copy(t.quaternion);
       var info = vehicle.wheelInfos[w];
-      if (info.isInContact) grounded++;
+      if (wheelDown[w]) grounded++;
       var sl = typeof info.suspensionLength === "number" ? info.suspensionLength : REST;
       var comp = clamp((REST - sl) / TRAVEL, -1, 1);
       var se = suspEls[w];
