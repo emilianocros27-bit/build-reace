@@ -1683,12 +1683,14 @@
       return h;
     }
 
-    /* --- the trail: A (low, south) winding up to B (high, north-east) --- */
+    /* --- the trail: A (low valley, south) winding a long way up to B (ridge, north) --- */
     var CP = [
-      [-210, 232], [-150, 214], [-118, 156], [-158, 104], [-146, 40], [-88, 6],
-      [-34, 34], [-26, 104], [-72, 150], [-24, 176], [46, 158], [82, 104],
-      [40, 54], [-14, 26], [16, -30], [84, -22], [116, -84], [62, -126],
-      [-8, -112], [-58, -152], [-24, -206], [66, -212], [146, -178], [212, -214]
+      [-232, 236], [-196, 250], [-150, 236], [-120, 190], [-152, 140], [-190, 96],
+      [-150, 44], [-96, 30], [-64, 74], [-96, 128], [-58, 168], [4, 150],
+      [30, 96], [-8, 52], [-58, 20], [-40, -34], [24, -30], [70, -78],
+      [26, -128], [-36, -120], [-84, -160], [-40, -214], [46, -226], [120, -196],
+      [176, -140], [140, -78], [78, -44], [96, 20], [156, 62], [214, 40],
+      [232, -30], [214, -110], [236, -196]
     ];
     function crp(p0, p1, p2, p3, t) {
       var t2 = t * t, t3 = t2 * t;
@@ -1705,11 +1707,32 @@
     }
     TRAIL.push(CP[CP.length - 1].slice());
     var TLEN = TRAIL.length;
-    /* smoothed trail-surface elevation: follows the big terrain but graded flat locally */
-    var trailY = TRAIL.map(function (p) { return baseH(p[0], p[1]); });
-    for (var pass = 0; pass < 40; pass++) {
+    /* trail-surface elevation: mostly follows the terrain (so it rolls up and down),
+       blended toward a low->high ramp so the route as a whole climbs from A to B,
+       then heavily smoothed so the driving line is graded, never a staircase. */
+    var LOW = -22, HIGH = 20;
+    var trailY = TRAIL.map(function (p, i) {
+      var u = i / (TLEN - 1);
+      var ramp = LOW + (HIGH - LOW) * (u * u * (3 - 2 * u));   // ease so the ends are flatter
+      return baseH(p[0], p[1]) * 0.6 + ramp * 0.4;
+    });
+    for (var pass = 0; pass < 16; pass++) {
       var t2 = trailY.slice();
       for (var k = 1; k < TLEN - 1; k++) trailY[k] = (t2[k - 1] + 2 * t2[k] + t2[k + 1]) / 4;
+    }
+    /* cap any single-step grade so nothing is un-climbable for the Jeep */
+    for (var gp = 0; gp < 6; gp++) {
+      for (var g = 1; g < TLEN; g++) {
+        var run = Math.hypot(TRAIL[g][0] - TRAIL[g - 1][0], TRAIL[g][1] - TRAIL[g - 1][1]) || 1;
+        var maxd = run * 0.42;
+        if (trailY[g] - trailY[g - 1] > maxd) trailY[g] = trailY[g - 1] + maxd;
+        else if (trailY[g - 1] - trailY[g] > maxd) trailY[g] = trailY[g - 1] - maxd;
+      }
+      for (var g2 = TLEN - 2; g2 >= 0; g2--) {
+        var run2 = Math.hypot(TRAIL[g2 + 1][0] - TRAIL[g2][0], TRAIL[g2 + 1][1] - TRAIL[g2][1]) || 1;
+        var maxd2 = run2 * 0.42;
+        if (trailY[g2] - trailY[g2 + 1] > maxd2) trailY[g2] = trailY[g2 + 1] + maxd2;
+      }
     }
     /* nearest point on the trail POLYLINE (not just the vertices): gives a smooth
        perpendicular distance and a continuously-interpolated surface height, so the
@@ -2756,21 +2779,65 @@
   /* Static SVG path, marker-only updates at 20 Hz; no WebGL draw calls. */
   var mapMarker = document.getElementById("mapCar"), mapForward = new THREE.Vector3();
   var mapScale, mapX, mapZ;
-  (function () {
+  function mapPoint(x, z) { return (80 + (x - mapX) * mapScale).toFixed(2) + " " + (80 + (z - mapZ) * mapScale).toFixed(2); }
+  function fitMinimap(pts, closed) {
     var minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
-    CL.forEach(function (p) { minX = Math.min(minX, p[0]); maxX = Math.max(maxX, p[0]); minZ = Math.min(minZ, p[1]); maxZ = Math.max(maxZ, p[1]); });
-    mapScale = 140 / Math.max(maxX - minX, maxZ - minZ); mapX = (minX + maxX) / 2; mapZ = (minZ + maxZ) / 2;
-    function point(x, z) { return (80 + (x - mapX) * mapScale).toFixed(2) + " " + (80 + (z - mapZ) * mapScale).toFixed(2); }
-    document.getElementById("mapTrack").setAttribute("d", CL.map(function (p, i) { return (i ? "L" : "M") + point(p[0], p[1]); }).join(" ") + " Z");
+    pts.forEach(function (p) { minX = Math.min(minX, p[0]); maxX = Math.max(maxX, p[0]); minZ = Math.min(minZ, p[1]); maxZ = Math.max(maxZ, p[1]); });
+    mapScale = 130 / Math.max(maxX - minX, maxZ - minZ, 1); mapX = (minX + maxX) / 2; mapZ = (minZ + maxZ) / 2;
+    document.getElementById("mapTrack").setAttribute("d",
+      pts.map(function (p, i) { return (i ? "L" : "M") + mapPoint(p[0], p[1]); }).join(" ") + (closed ? " Z" : ""));
+  }
+  (function () {
+    fitMinimap(CL, true);
     var nn = nrm(startIdx), p = CL[startIdx];
-    document.getElementById("mapStart").setAttribute("d", "M" + point(p[0] - nn[0] * 12, p[1] - nn[1] * 12) + " L" + point(p[0] + nn[0] * 12, p[1] + nn[1] * 12));
+    document.getElementById("mapStart").setAttribute("d", "M" + mapPoint(p[0] - nn[0] * 12, p[1] - nn[1] * 12) + " L" + mapPoint(p[0] + nn[0] * 12, p[1] + nn[1] * 12));
   })();
+  /* redraw the minimap when the map changes */
+  var _origSetMap = setMap;
+  setMap = function (id) {
+    _origSetMap(id);
+    if (MODE === "offroad") {
+      var tp = OFFROAD.trailWorld.map(function (p) { return [p[0], p[1]]; });
+      fitMinimap(tp, false);
+      var a = OFFROAD.trailWorld[0], f = OFFROAD.trailWorld[OFFROAD.trailWorld.length - 1];
+      document.getElementById("mapStart").setAttribute("d",
+        "M" + mapPoint(a[0] - 8, a[1]) + " L" + mapPoint(a[0] + 8, a[1]) +
+        " M" + mapPoint(f[0], f[1] - 8) + " L" + mapPoint(f[0], f[1] + 8));
+    } else {
+      fitMinimap(CL, true);
+      var nn2 = nrm(startIdx), p2 = CL[startIdx];
+      document.getElementById("mapStart").setAttribute("d", "M" + mapPoint(p2[0] - nn2[0] * 12, p2[1] - nn2[1] * 12) + " L" + mapPoint(p2[0] + nn2[0] * 12, p2[1] + nn2[1] * 12));
+    }
+  };
   function updateRaceHUD(dt) {
     raceHudTick += dt; if (raceHudTick < 0.05) return; raceHudTick %= 0.05;
     var P = chassisBody.position;
     mapForward.set(0, 0, 1).applyQuaternion(chassisBody.quaternion);
     mapMarker.setAttribute("transform", "translate(" + (80 + (P.x - mapX) * mapScale).toFixed(2) + " " +
       (80 + (P.z - mapZ) * mapScale).toFixed(2) + ") rotate(" + (Math.atan2(mapForward.x, -mapForward.z) * 180 / Math.PI).toFixed(1) + ")");
+
+    if (MODE === "offroad") {
+      elCount.textContent = (offroad.progress * 100).toFixed(0).padStart(2, "0") + "%";
+      elMapBest.textContent = offroad.best ? fmtT(offroad.best) : "--:--";
+      elSectorLabel.textContent = offroad.done ? "META" : "RUTA";
+      elSector.textContent = offroad.t > 0 ? offroad.t.toFixed(2) : (start.active ? "--.--" : "0.00");
+      bestEls.forEach(function (el) { el.textContent = "--.---"; });
+      if (raceClock >= splitUntil) elSplit.classList.remove("show");
+      var lit2 = start.active ? Math.min(5, Math.floor(start.t)) : 0;
+      for (var j = 0; j < 5; j++) startBulbs[j].classList.toggle("lit", j < lit2);
+      var vis2 = start.active || raceClock < start.goUntil || offroad.done;
+      elStart.classList.toggle("gone", !vis2); elStart.classList.toggle("go", !start.active && !offroad.done);
+      elStart.classList.toggle("jump", false);
+      document.body.classList.toggle("is-staging", vis2 && !offroad.done);
+      var st2 = offroad.done ? "META · " + offroad.t.toFixed(2) + " s"
+        : start.active ? (lit2 === 5 ? "LISTO" : "SALIDA · " + (5 - lit2)) : "¡VAMOS!";
+      if (elStartStatus.textContent !== st2) elStartStatus.textContent = st2;
+      document.getElementById("startHint").textContent = offroad.done ? "R para repetir la ruta"
+        : start.active ? "Doble toque para salir ya" : "Llega hasta la meta";
+      elWrong.classList.remove("show");
+      return;
+    }
+
     elCount.textContent = String(lap.completed + 1).padStart(2, "0"); elMapBest.textContent = fmtT(lap.best);
     elSectorLabel.textContent = "SECTOR " + (lap.sector + 1); elSector.textContent = sectorText(lap.running ? lap.t - lap.sectorStart : 0);
     bestEls.forEach(function (el, i) { el.textContent = sectorText(lap.bestSectors[i]); });
@@ -3170,7 +3237,10 @@
       look.set(P.x, P.y, P.z);
     }
     if (camMode < 2 && !REDUCED) desired.addScaledVector(_f, driveFeel.chaseOffset);
-    if (camMode !== 2) desired.y = Math.max(desired.y, EL[near.i] + 2.2, P.y + 1.4);
+    if (camMode !== 2) {
+      var floorY = MODE === "offroad" ? OFFROAD.groundY(desired.x, desired.z) + 2.6 : EL[near.i] + 2.2;
+      desired.y = Math.max(desired.y, floorY, P.y + 1.4);
+    }
     var k = REDUCED || camSnap || camMode === 2 ? 1 : Math.min(dt * 6.5, 1); camSnap = false;
     camPos.lerp(desired, k);
     camLook.lerp(look, Math.min(k * 1.5, 1));
