@@ -235,6 +235,10 @@
 
   #garage { position: fixed; inset: 0; z-index: 19; display: grid; place-items: center; overflow-y: auto; touch-action: pan-y; padding: 24px; background: var(--pit-void); transition: opacity .3s, visibility .3s; }
   #garage.gone { opacity: 0; visibility: hidden; pointer-events: none; }
+  #mapmenu { position: fixed; inset: 0; z-index: 19; display: grid; place-items: center; overflow-y: auto; padding: 24px; background: var(--pit-void); transition: opacity .3s, visibility .3s; }
+  #mapmenu.gone { opacity: 0; visibility: hidden; pointer-events: none; }
+  #mapmenu h1 { font-family: "Chakra Petch", sans-serif; letter-spacing: .15em; color: var(--amber); text-align: center; font-size: 24px; margin: 0 0 24px; }
+  .map-thumb { display: block; width: 100%; height: 120px; margin-bottom: 12px; background: #0c1116; border: 1px solid var(--ink-faint); }
   .garage-content { width: min(960px, 100%); }
   #garage h1 { font-family: "Chakra Petch", sans-serif; letter-spacing: .15em; color: var(--amber); text-align: center; font-size: 24px; margin: 0 0 24px; }
   .car-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; max-width: 640px; margin: 0 auto; }
@@ -321,9 +325,15 @@
   <button id="btnMode" type="button">Manual</button>
   <button id="btnCam" type="button">Cam · Chase</button>
   <button id="btnMute" type="button">Sound</button>
+  <button id="btnMap" type="button">Mapa</button>
   <button id="btnGarage" type="button">Garage</button>
   <button id="btnReset" type="button">Reset</button>
 </div>
+
+<div id="mapmenu" class="gone" role="dialog" aria-modal="true" aria-labelledby="mapTitle" aria-hidden="true"><div class="garage-content">
+  <h1 id="mapTitle">ELIGE MAPA</h1>
+  <div class="car-grid" id="mapCards"></div>
+</div></div>
 
 <div class="hud hint" id="hint">
   <b>W</b>/<b>&uarr;</b> acelerar &nbsp;·&nbsp; <b>S</b>/<b>&darr;</b> frenar &nbsp;·&nbsp; <b>A</b> <b>D</b> dirección &nbsp;·&nbsp; <b>Shift</b> subir marcha &nbsp;·&nbsp; <b>Espacio</b> bajar marcha &nbsp;·&nbsp; <b>B</b> freno de mano &nbsp;·&nbsp; <b>M</b> auto/manual &nbsp;·&nbsp; <b>C</b> cámara &nbsp;·&nbsp; <b>R</b> reiniciar
@@ -1634,21 +1644,268 @@
     scene.add(grp);
   })();
 
+  /* ================= off-road map: "Terracería" =================
+     A long point-to-point trail cut into a hilly heightfield. Built now, kept
+     dormant (meshes hidden, bodies out of the world) until the map menu
+     switches to it. Everything lives OX metres east so it never touches the
+     circuit. Local coords below are map-centred; world = local + (OX, 0, 0). */
+  var OFFROAD = (function () {
+    var OX = 4200;
+    var SIZE = 560, SEG = 176, ES = SIZE / SEG;   // ~3.2 m cells
+    var HALF = SIZE / 2;
+
+    var noise = (function (seed) {
+      function hash(x, y) {
+        var h = (Math.imul(x | 0, 374761393) + Math.imul(y | 0, 668265263) + seed) | 0;
+        h = Math.imul(h ^ (h >>> 13), 1274126177);
+        return ((h ^ (h >>> 16)) >>> 0) / 4294967295;
+      }
+      function sm(t) { return t * t * (3 - 2 * t); }
+      function n2(x, y) {
+        var xi = Math.floor(x), yi = Math.floor(y), xf = x - xi, yf = y - yi;
+        var a = hash(xi, yi), b = hash(xi + 1, yi), c = hash(xi, yi + 1), d = hash(xi + 1, yi + 1);
+        var u = sm(xf), v = sm(yf);
+        return a + (b - a) * u + (c - a) * v + (a - b - c + d) * u * v;
+      }
+      return function (x, y, oct) {
+        oct = oct || 4; var amp = 1, f = 1, s = 0, nm = 0;
+        for (var i = 0; i < oct; i++) { s += amp * n2(x * f, y * f); nm += amp; amp *= 0.5; f *= 2; }
+        return s / nm;
+      };
+    })(20471);
+
+    function baseH(x, z) {
+      var h = (noise(x * 0.0052, z * 0.0052, 4) - 0.5) * 58;    // broad ridges + valleys
+      h += (noise(x * 0.016 + 30, z * 0.016, 4) - 0.5) * 15;    // secondary hills
+      h += (noise(x * 0.05, z * 0.05, 3) - 0.5) * 3.4;          // ground chatter
+      var e = Math.max(Math.abs(x), Math.abs(z)) / HALF;
+      if (e > 0.68) h += (e - 0.68) * (e - 0.68) * 460;         // steep rim = natural wall
+      return h;
+    }
+
+    /* --- the trail: A (low, south) winding up to B (high, north-east) --- */
+    var CP = [
+      [-210, 232], [-150, 214], [-118, 156], [-158, 104], [-146, 40], [-88, 6],
+      [-34, 34], [-26, 104], [-72, 150], [-24, 176], [46, 158], [82, 104],
+      [40, 54], [-14, 26], [16, -30], [84, -22], [116, -84], [62, -126],
+      [-8, -112], [-58, -152], [-24, -206], [66, -212], [146, -178], [212, -214]
+    ];
+    function crp(p0, p1, p2, p3, t) {
+      var t2 = t * t, t3 = t2 * t;
+      return [
+        0.5 * ((2 * p1[0]) + (-p0[0] + p2[0]) * t + (2 * p0[0] - 5 * p1[0] + 4 * p2[0] - p3[0]) * t2 + (-p0[0] + 3 * p1[0] - 3 * p2[0] + p3[0]) * t3),
+        0.5 * ((2 * p1[1]) + (-p0[1] + p2[1]) * t + (2 * p0[1] - 5 * p1[1] + 4 * p2[1] - p3[1]) * t2 + (-p0[1] + 3 * p1[1] - 3 * p2[1] + p3[1]) * t3)
+      ];
+    }
+    var TRAIL = [];
+    for (var i = 0; i < CP.length - 1; i++) {
+      var a = CP[Math.max(0, i - 1)], b = CP[i], c = CP[i + 1], d = CP[Math.min(CP.length - 1, i + 2)];
+      var steps = Math.max(6, Math.round(Math.hypot(c[0] - b[0], c[1] - b[1]) / 4));
+      for (var s = 0; s < steps; s++) TRAIL.push(crp(a, b, c, d, s / steps));
+    }
+    TRAIL.push(CP[CP.length - 1].slice());
+    var TLEN = TRAIL.length;
+    /* smoothed trail-surface elevation: follows the big terrain but graded flat locally */
+    var trailY = TRAIL.map(function (p) { return baseH(p[0], p[1]); });
+    for (var pass = 0; pass < 40; pass++) {
+      var t2 = trailY.slice();
+      for (var k = 1; k < TLEN - 1; k++) trailY[k] = (t2[k - 1] + 2 * t2[k] + t2[k + 1]) / 4;
+    }
+    /* nearest point on the trail POLYLINE (not just the vertices): gives a smooth
+       perpendicular distance and a continuously-interpolated surface height, so the
+       graded corridor is a ramp, never a staircase. */
+    function nearestTrail(x, z) {
+      var bd = 1e9, bi = 0, bf = 0;
+      for (var t = 0; t < TLEN - 1; t++) {
+        var ax = TRAIL[t][0], az = TRAIL[t][1], bx = TRAIL[t + 1][0], bz = TRAIL[t + 1][1];
+        var ex = bx - ax, ez = bz - az, len2 = ex * ex + ez * ez || 1;
+        var f = ((x - ax) * ex + (z - az) * ez) / len2; if (f < 0) f = 0; else if (f > 1) f = 1;
+        var cx = ax + ex * f, cz = az + ez * f, dd = (x - cx) * (x - cx) + (z - cz) * (z - cz);
+        if (dd < bd) { bd = dd; bi = t; bf = f; }
+      }
+      return { i: bi, f: bf, d: Math.sqrt(bd), sy: trailY[bi] + (trailY[bi + 1] - trailY[bi]) * bf };
+    }
+
+    /* final terrain height: near the trail, ramp base -> graded corridor height */
+    function finalH(x, z) {
+      var nt = nearestTrail(x, z), base = baseH(x, z), tg = nt.sy;
+      var road = 9, shoulder = 22;
+      if (nt.d < road) return tg + (noise(x * 0.4, z * 0.4, 2) - 0.5) * 0.3;   // lightly rutted, flat
+      if (nt.d < shoulder) {
+        var s = (nt.d - road) / (shoulder - road);
+        return tg + (base - tg) * (s * s * (3 - 2 * s));
+      }
+      return base;
+    }
+
+    /* ---- heightfield: data[i][j] over the SEG+1 grid ---- */
+    /* cannon Heightfield: data[i][j] is the height at local (i*ES, j*ES); the body
+       is laid flat by a -90deg X rotation and slid so the grid centres on (OX,0,0).
+       With that rotation local (i,j) -> world (OX-HALF + i*ES, h, HALF - j*ES), so
+       j must count DOWN the world +z axis. */
+    var data = [], minY = 1e9, maxY = -1e9;
+    for (var ix = 0; ix <= SEG; ix++) {
+      data[ix] = [];
+      for (var iz = 0; iz <= SEG; iz++) {
+        var h = finalH(ix * ES - HALF, HALF - iz * ES);
+        data[ix][iz] = h; if (h < minY) minY = h; if (h > maxY) maxY = h;
+      }
+    }
+    var hfShape = new CANNON.Heightfield(data, { elementSize: ES });
+    var hfBody = new CANNON.Body({ mass: 0, material: roadMat });
+    hfBody.addShape(hfShape);
+    hfBody.quaternion.setFromEuler(-Math.PI / 2, 0, 0);
+    hfBody.position.set(OX - HALF, 0, HALF);
+    /* safety floor far below, in case a ray ever misses the heightfield */
+    var floorBody = new CANNON.Body({ mass: 0, shape: new CANNON.Box(new CANNON.Vec3(HALF + 40, 4, HALF + 40)) });
+    floorBody.position.set(OX, minY - 30, 0);
+    var bodies = [hfBody, floorBody];
+
+    /* world-space ground height (for spawn / respawn / props) */
+    function groundY(wx, wz) { return finalH(wx - OX, wz); }
+
+    /* ---- terrain mesh: displaced plane, vertex-coloured ---- */
+    var grp = new THREE.Group(); grp.visible = false;
+    var geo = new THREE.PlaneGeometry(SIZE, SIZE, SEG, SEG);
+    geo.rotateX(-Math.PI / 2);
+    var pos = geo.attributes.position, col = [];
+    var cGrass = new THREE.Color(0x4f6a37), cDirt = new THREE.Color(0x7a5a3c),
+        cMud = new THREE.Color(0x4b3826), cRock = new THREE.Color(0x6d6b66);
+    for (var vi = 0; vi < pos.count; vi++) {
+      var lx = pos.getX(vi), lz = pos.getZ(vi), hy = finalH(lx, lz);
+      pos.setY(vi, hy);
+      var nt = nearestTrail(lx, lz);
+      var slope = Math.abs(finalH(lx + 2, lz) - finalH(lx - 2, lz)) + Math.abs(finalH(lx, lz + 2) - finalH(lx, lz - 2));
+      var c = cGrass.clone();
+      if (nt.d < 9) c.copy(nt.i / TLEN > 0.35 && nt.i / TLEN < 0.7 ? cMud : cDirt);
+      else if (nt.d < 22) c.lerp(cDirt, 1 - (nt.d - 9) / 13);
+      if (slope > 3.4) c.lerp(cRock, Math.min(1, (slope - 3.4) / 6));
+      c.offsetHSL(0, 0, (noise(lx * 0.3, lz * 0.3, 2) - 0.5) * 0.08);
+      col.push(c.r, c.g, c.b);
+    }
+    geo.setAttribute("color", new THREE.Float32BufferAttribute(col, 3));
+    geo.computeVertexNormals();
+    var terrain = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1, metalness: 0 }));
+    terrain.position.x = OX; terrain.receiveShadow = true; grp.add(terrain);
+
+    /* ---- forest: dense instanced pines + oaks, off the trail, denser on slopes ---- */
+    (function () {
+      var trunkG = new THREE.CylinderGeometry(0.28, 0.42, 3.4, 5);
+      var pineG = new THREE.ConeGeometry(1.9, 6.5, 6);
+      var oakG = new THREE.IcosahedronGeometry(2.4, 0);
+      var trunkM = new THREE.MeshStandardMaterial({ color: 0x4a3b2c, roughness: 1 });
+      var pineM = new THREE.MeshStandardMaterial({ color: 0x2f4a2a, roughness: 1 });
+      var oakM = new THREE.MeshStandardMaterial({ color: 0x486b34, roughness: 1 });
+      var MAXT = 2600;
+      var trunk = new THREE.InstancedMesh(trunkG, trunkM, MAXT);
+      var pine = new THREE.InstancedMesh(pineG, pineM, MAXT);
+      var oak = new THREE.InstancedMesh(oakG, oakM, MAXT);
+      trunk.castShadow = pine.castShadow = oak.castShadow = true;
+      var m = new THREE.Matrix4(), q = new THREE.Quaternion(), sc = new THREE.Vector3(), p = new THREE.Vector3();
+      var nP = 0, nO = 0, tries = 0;
+      while ((nP + nO) < MAXT * 2 - 2 && tries < 90000) {
+        tries++;
+        var x = (Math.random() - 0.5) * SIZE * 0.97, z = (Math.random() - 0.5) * SIZE * 0.97;
+        var nt = nearestTrail(x, z);
+        if (nt.d < 12) continue;
+        var slope = Math.abs(finalH(x + 2, z) - finalH(x - 2, z)) + Math.abs(finalH(x, z + 2) - finalH(x, z - 2));
+        if (slope > 9) continue;                         // no trees on cliffs
+        var dens = 0.55 + Math.min(0.4, slope * 0.06) + (noise(x * 0.02, z * 0.02, 3) - 0.3) * 0.9;
+        if (Math.random() > dens) continue;
+        var y = finalH(x, z);
+        var pine1 = Math.random() < 0.62;
+        var s = 0.7 + Math.random() * 0.8;
+        q.setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.random() * 6.28);
+        if (pine1 && nP < MAXT) {
+          p.set(OX + x, y + 1.7 * s, z); sc.set(s, s, s); m.compose(p, q, sc); trunk.setMatrixAt(nP, m);
+          p.set(OX + x, y + 4.6 * s, z); m.compose(p, q, sc); pine.setMatrixAt(nP, m); nP++;
+        } else if (nO < MAXT) {
+          p.set(OX + x, y + 1.6 * s, z); sc.set(s, s, s); q.setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.random() * 6.28);
+          m.compose(p, q, sc);
+          p.set(OX + x, y + 3.6 * s, z); m.compose(p, q, sc); oak.setMatrixAt(nO, m); nO++;
+        }
+      }
+      trunk.count = nP; pine.count = nP; oak.count = nO;
+      trunk.instanceMatrix.needsUpdate = pine.instanceMatrix.needsUpdate = oak.instanceMatrix.needsUpdate = true;
+      grp.add(trunk); grp.add(pine); grp.add(oak);
+    })();
+
+    /* ---- rocks + boulders scattered near the trail ---- */
+    (function () {
+      var rockG = new THREE.DodecahedronGeometry(1, 0);
+      var rock = new THREE.InstancedMesh(rockG, new THREE.MeshStandardMaterial({ color: 0x6a6660, roughness: 1 }), 900);
+      rock.castShadow = rock.receiveShadow = true;
+      var m = new THREE.Matrix4(), q = new THREE.Quaternion(), sc = new THREE.Vector3(), p = new THREE.Vector3();
+      var n = 0;
+      for (var t = 0; t < TLEN && n < 900; t += 2) {
+        var reps = 1 + (Math.random() < 0.5 ? 1 : 0);
+        for (var r = 0; r < reps && n < 900; r++) {
+          var ang = Math.random() * 6.28, dist = 10 + Math.random() * 26;
+          var x = TRAIL[t][0] + Math.cos(ang) * dist, z = TRAIL[t][1] + Math.sin(ang) * dist;
+          var s = 0.5 + Math.random() * 2.6;
+          q.setFromEuler(new THREE.Euler(Math.random(), Math.random() * 6.28, Math.random()));
+          p.set(OX + x, finalH(x, z) + s * 0.3, z); sc.set(s, s * 0.8, s);
+          m.compose(p, q, sc); rock.setMatrixAt(n++, m);
+        }
+      }
+      rock.count = n; rock.instanceMatrix.needsUpdate = true; grp.add(rock);
+    })();
+
+    /* ---- distant ridge + a few buildings/antennas, hazed by fog (the "disguise") ---- */
+    (function () {
+      var ridgeM = new THREE.MeshBasicMaterial({ color: 0x4c5f52, fog: true });
+      for (var a = 0; a < 26; a++) {
+        var ang = a / 26 * 6.28, R = HALF + 60 + Math.random() * 40;
+        var w = 60 + Math.random() * 120, h = 40 + Math.random() * 90;
+        var b = new THREE.Mesh(new THREE.BoxGeometry(w, h, 20), ridgeM);
+        b.position.set(OX + Math.cos(ang) * R, maxY + h / 2 - 14, Math.sin(ang) * R);
+        b.lookAt(OX, b.position.y, 0); grp.add(b);
+      }
+      var cityM = new THREE.MeshBasicMaterial({ color: 0x8395a6, fog: true });
+      for (var c = 0; c < 10; c++) {
+        var ca = 0.6 + c * 0.42, cR = HALF + 30 + Math.random() * 25;
+        var cb = new THREE.Mesh(new THREE.BoxGeometry(10 + Math.random() * 16, 30 + Math.random() * 60, 10 + Math.random() * 16), cityM);
+        cb.position.set(OX + Math.cos(ca) * cR, maxY + 10 + Math.random() * 20, Math.sin(ca) * cR);
+        grp.add(cb);
+      }
+    })();
+
+    scene.add(grp);
+
+    var startYaw = Math.atan2(TRAIL[3][0] - TRAIL[0][0], TRAIL[3][1] - TRAIL[0][1]);
+    return {
+      OX: OX, group: grp, bodies: bodies, trail: TRAIL, groundY: groundY,
+      nearestTrail: function (wx, wz) { return nearestTrail(wx - OX, wz); },
+      trailWorld: TRAIL.map(function (p, i) { return [p[0] + OX, p[1], trailY[i]]; }),
+      spawn: { x: TRAIL[0][0] + OX, z: TRAIL[0][1], yaw: startYaw, y: trailY[0] },
+      finish: { x: TRAIL[TLEN - 1][0] + OX, z: TRAIL[TLEN - 1][1], y: trailY[TLEN - 1] },
+      minY: minY, maxY: maxY
+    };
+  })();
+  OFFROAD.bodies.forEach(function (b) { /* start out of the world */ });
+
   /* ================= the car ================= */
   var CH = { x: 0.95, y: 0.32, z: 1.95 };
+  var CHASSIS_DEFAULT = { box: [0.95, 0.32, 1.95], boxY: 0.26, sph: [1.75, -1.75], sphY: 0.18, sphR: 0.5 };
   var carMat = new CANNON.Material("car");
   var chassisBody = new CANNON.Body({ mass: 170, material: carMat });
   /* collision box sits above the body origin → centre of mass is low → the car
-     leans and dives but strongly resists rolling over (like a real car). */
-  chassisBody.addShape(new CANNON.Box(new CANNON.Vec3(CH.x, CH.y, CH.z)), new CANNON.Vec3(0, 0.26, 0));
-  /* two small nose/tail spheres, kept just inside the body width so they never chatter
-     against a wall during a normal slide — they only catch a genuine high-speed nose-on
-     hit that box-box could otherwise skip. The barrier walls are thick (1.8 m) now, and
-     a continuous soft clamp below is the real anti-tunnel guard. */
-  [1.75, -1.75].forEach(function (z) {
-    chassisBody.addShape(new CANNON.Sphere(0.5), new CANNON.Vec3(0, 0.18, z));
-  });
-  chassisBody.updateBoundingRadius();
+     leans and dives but strongly resists rolling over (like a real car). The box
+     and nose/tail spheres are rebuilt per car by setChassisShapes(). */
+  function setChassisShapes(cfg) {
+    cfg = cfg || CHASSIS_DEFAULT;
+    chassisBody.shapes.length = 0;
+    chassisBody.shapeOffsets.length = 0;
+    chassisBody.shapeOrientations.length = 0;
+    chassisBody.addShape(new CANNON.Box(new CANNON.Vec3(cfg.box[0], cfg.box[1], cfg.box[2])), new CANNON.Vec3(0, cfg.boxY, 0));
+    cfg.sph.forEach(function (z) {
+      chassisBody.addShape(new CANNON.Sphere(cfg.sphR), new CANNON.Vec3(0, cfg.sphY, z));
+    });
+    chassisBody.updateBoundingRadius();
+    chassisBody.updateMassProperties();
+    CH = { x: cfg.box[0], y: cfg.box[1], z: cfg.box[2] };
+  }
+  setChassisShapes();
   chassisBody.angularDamping = 0.35;
   chassisBody.allowSleep = false;
   /* car vs barrier: low grip so the car slides along it, no bounce */
@@ -1681,12 +1938,16 @@
       stats: { vel: 1, agarre: 3, manejo: 2 },
       colors: { body: 0xb63a2f, accent: 0x181818, rim: 0x2b2b2b },
       phys: { mass: 235, peakTq: 42, limiter: 5600, final: 6.6, gears: [4.7, 2.8, 1.85, 1.36, 1.05, 0.86],
-        rest: 0.55, travelF: 0.66, travelR: 0.62, rideDrop: 0.5 },
-      feel: { FRONT_GRIP: 1.02, REAR_GRIP: 1.05, FRONT_STIFF: 24, REAR_STIFF: 22,
-        FRONT_COMP: 4.6, REAR_COMP: 4.2, FRONT_RELAX: 3.9, REAR_RELAX: 3.6,
-        FRONT_ROLL: 0.05, REAR_ROLL: 0.055, STEER_RATE: 6, STEER_LAG: 12, YAW_CATCH: 0.9, KERB_ACCEL: 0.9 } }
+        rest: 0.52, travelF: 0.60, travelR: 0.56, rideDrop: 0.45,
+        body: { box: [0.86, 0.34, 1.42], boxY: 0.10, sph: [1.35, -1.35], sphY: 0.05, sphR: 0.34 } },
+      feel: { FRONT_GRIP: 1.04, REAR_GRIP: 1.06, FRONT_STIFF: 32, REAR_STIFF: 30,
+        FRONT_COMP: 5.6, REAR_COMP: 5.2, FRONT_RELAX: 4.4, REAR_RELAX: 4.1,
+        FRONT_ROLL: 0.026, REAR_ROLL: 0.028, STEER_RATE: 6, STEER_LAG: 12, YAW_CATCH: 1.1, KERB_ACCEL: 0.9 } }
   ];
   var currentCar = CARS[0], garageOpen = true, carRideDrop = 0;
+  var MODE = "circuit", mapMenuOpen = false;
+  var offroad = { active: false, done: false, t: 0, best: 0, progress: 0, checkpoint: 0 };
+  try { var savedBest = parseFloat(localStorage.getItem("ty.offroad.best")); if (savedBest > 0) offroad.best = savedBest; } catch (e) {}
   var driftFactor = 0;
   var driveFeel = { steerDemand: 0, counter: 0, powerSlip: 0, rearSlip: 0, lateral: 0,
     speed: 0, kmh: 0, accel: 0, prevForward: null, impact: 0, kerb: 0, kerbPhase: 0,
@@ -1939,6 +2200,7 @@
                                      : (pv.travelR != null ? pv.travelR : 0.30);
     }
     carRideDrop = pv.rideDrop || 0;
+    setChassisShapes(pv.body);
     carPaint.color.setHex(spec.colors.body);
     carAccent.color.setHex(spec.colors.accent);
     rimMat.color.setHex(spec.colors.rim);
@@ -2008,6 +2270,33 @@
     applyCar(CARS.filter(function (spec) { return spec.id === saved; })[0] || CARS[0]);
   }
 
+  /* ---- map menu ---- */
+  var MAPS = [
+    { id: "circuit", name: "AUTÓDROMO", tag: "Circuito F1 de los Hermanos Rodríguez. Asfalto, vueltas cronometradas.",
+      thumb: '<rect width="100%" height="100%" fill="#0c1116"/><path d="M18 96 L18 30 Q18 18 32 18 L120 18 Q134 18 134 30 L134 60 L108 60 Q96 60 96 74 L96 96 Z" fill="none" stroke="#c8c8c8" stroke-width="7"/>' },
+    { id: "offroad", name: "TERRACERÍA", tag: "Ruta larga de tierra y lodo por el cerro. Puro sube y baja. Punto A a punto B.",
+      thumb: '<rect width="100%" height="100%" fill="#2b241c"/><path d="M8 108 C40 60 30 40 62 46 C92 52 74 20 110 24 C132 26 128 12 148 16" fill="none" stroke="#c79a63" stroke-width="8" stroke-linecap="round"/>' }
+  ];
+  var mapMenuEl = document.getElementById("mapmenu"), mapCards = [];
+  function buildMapMenu() {
+    MAPS.forEach(function (mp) {
+      var card = document.createElement("button"); card.type = "button"; card.className = "car-card";
+      card.innerHTML = '<span class="car-name" role="heading" aria-level="2">' + mp.name + '</span>' +
+        '<svg class="map-thumb" viewBox="0 0 152 120" aria-hidden="true">' + mp.thumb + '</svg>' +
+        '<span class="car-tag">' + mp.tag + '</span>';
+      card.addEventListener("click", function () { setMap(mp.id); mapMenuEl.classList.add("gone"); renderer.domElement.focus(); });
+      document.getElementById("mapCards").appendChild(card); mapCards.push(card);
+    });
+  }
+  function openMapMenu() {
+    mapMenuOpen = true; clearDriveInput();
+    mapCards.forEach(function (c, i) { c.classList.toggle("selected", MAPS[i].id === MODE); });
+    mapMenuEl.classList.remove("gone"); mapMenuEl.setAttribute("aria-hidden", "false");
+    (mapCards[MAPS.map(function (m) { return m.id; }).indexOf(MODE)] || mapCards[0]).focus();
+  }
+  mapMenuEl.addEventListener("click", function (e) { if (e.target === mapMenuEl) { mapMenuEl.classList.add("gone"); mapMenuOpen = false; } });
+  document.getElementById("btnMap").addEventListener("click", openMapMenu);
+
   function tqf(r) {
     if (r < 1000) return 0.60;
     if (r < 2000) return 0.60 + (r - 1000) / 1000 * 0.22;
@@ -2040,9 +2329,10 @@
   function killHint() { if (!hintKilled) { hintKilled = true; document.getElementById("hint").classList.add("gone"); } }
   setTimeout(killHint, 10000);
 
+  function uiBlocking() { return garageOpen || mapMenuOpen; }
   function onKey(e, down) {
     var c = e.code;
-    if (garageOpen) { if (!down) keys[c] = false; return; }
+    if (uiBlocking()) { if (!down) keys[c] = false; return; }
     if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Space"].indexOf(c) >= 0) e.preventDefault();
     if (down && !e.repeat) {
       if (!keys[c] && ["KeyW", "KeyS", "KeyA", "KeyD", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Space"].indexOf(c) >= 0)
@@ -2063,7 +2353,7 @@
     var k = b.getAttribute("data-k"), lastTouch = -1000;
     function on(e) {
       e.preventDefault();
-      if (garageOpen) return;
+      if (uiBlocking()) return;
       if (e.type === "mousedown" && performance.now() - lastTouch < 650) return;
       if (e.type === "touchstart") lastTouch = performance.now();
       if (b.classList.contains("held")) return;
@@ -2130,10 +2420,36 @@
   }
 
   function resetCar() {
-    placeCar(CL[startIdx][0] - startDir.x * 8, CL[startIdx][1] - startDir.z * 8,
-      Math.atan2(startDir.x, startDir.z), EL[startIdx] + 1.7 + carRideDrop);
+    if (MODE === "offroad") {
+      var sp = OFFROAD.spawn;
+      placeCar(sp.x, sp.z, sp.yaw, sp.y + 2.2 + carRideDrop);
+      offroad.done = false; offroad.t = 0; offroad.progress = 0; offroad.checkpoint = 0;
+    } else {
+      placeCar(CL[startIdx][0] - startDir.x * 8, CL[startIdx][1] - startDir.z * 8,
+        Math.atan2(startDir.x, startDir.z), EL[startIdx] + 1.7 + carRideDrop);
+    }
     engineRPM = freeRPM = IDLE; gear = mode === "MANUAL" ? gear : 1; thr = brk = 0;
     resetRace();
+  }
+
+  /* switch between the circuit and the off-road trail */
+  function setMap(id) {
+    if ((id === "offroad") === (MODE === "offroad")) { mapMenuOpen = false; return; }
+    MODE = id === "offroad" ? "offroad" : "circuit";
+    if (MODE === "offroad") {
+      OFFROAD.bodies.forEach(function (b) { world.addBody(b); });
+      OFFROAD.group.visible = true;
+      ground.visible = false;
+      scene.fog.near = 120; scene.fog.far = 900;
+    } else {
+      OFFROAD.bodies.forEach(function (b) { world.removeBody(b); });
+      OFFROAD.group.visible = false;
+      ground.visible = true;
+      scene.fog.near = 520; scene.fog.far = 1500;
+    }
+    mapMenuOpen = false;
+    gear = pendingGear = 1; shiftTimer = shiftCd = limiterCut = 0;
+    resetCar();
   }
 
   /* ================= engine sound (WebAudio) ================= */
@@ -2336,13 +2652,13 @@
     start.active = false; start.goUntil = raceClock + 2.5; start.lastKey = "";
   }
   function driveTap(key, gas) {
-    if (garageOpen || !start.active) return;
+    if (uiBlocking() || !start.active) return;
     if (gas) start.jumpUntil = raceClock + 1.2;
     if (key === start.lastKey && raceClock - start.lastTap <= 0.65) lightsOut();
     start.lastKey = key; start.lastTap = raceClock;
   }
   function stepStart(dt, gas) {
-    if (garageOpen) return;
+    if (uiBlocking()) return;
     raceClock += dt;
     if (start.active) {
       if (gas && !start.heldGas) start.jumpUntil = raceClock + 1.2;
@@ -2373,6 +2689,35 @@
     splitUntil = raceClock + 3;
     if (split > 0 && (!lap.bestSectors[i] || split < lap.bestSectors[i])) { lap.bestSectors[i] = split; saveRecords(); }
   }
+  function stepOffroad(dt, upDot, speed) {
+    var P = chassisBody.position;
+    var nt = OFFROAD.nearestTrail(P.x, P.z);
+    var tw = OFFROAD.trailWorld, last = tw.length - 1;
+    var frac = nt.i / last;
+    if (!start.active && !offroad.done) offroad.t += dt;
+    if (frac > offroad.progress) offroad.progress = frac;
+    if (nt.d < 15 && upDot > 0.4) offroad.checkpoint = nt.i;
+    var fin = OFFROAD.finish;
+    if (!offroad.done && !start.active && frac > 0.92 && Math.hypot(P.x - fin.x, P.z - fin.z) < 14) {
+      offroad.done = true;
+      if (!offroad.best || offroad.t < offroad.best) {
+        offroad.best = offroad.t;
+        try { localStorage.setItem("ty.offroad.best", String(offroad.t)); } catch (e) {}
+      }
+    }
+    var groundH = OFFROAD.groundY(P.x, P.z);
+    var flipped = upDot < 0.2 && speed < 3;
+    var fell = P.y < groundH - 16;
+    var wayOff = nt.d > 60 && speed < 5;
+    if (flipped || fell || wayOff) stuckTimer += dt; else stuckTimer = 0;
+    if (stuckTimer > 2.0) {
+      stuckTimer = 0;
+      var ci = Math.max(0, Math.min(last - 3, offroad.checkpoint));
+      var a = tw[ci], b = tw[ci + 3];
+      placeCar(a[0], a[1], Math.atan2(b[0] - a[0], b[1] - a[1]), a[2] + 2.6 + carRideDrop);
+    }
+  }
+
   function stepTiming(progress, dt, trackSpeed, onTrack) {
     var previous = lap.progress; lap.progress = progress;
     if (start.active) return;
@@ -2457,8 +2802,9 @@
   var cl = new THREE.Clock(), steerNow = 0, bootHidden = false, stuckTimer = 0, prevGrounded = 4;
   var wheelDown = [true, true, true, true];
   buildGarage();
+  buildMapMenu();
   resetCar();
-  try { window.__DBG = { world: world, vehicle: vehicle, chassis: chassisBody, CL: CL, EL: EL, HW: HW, N: N, wallBodies: wallBodies, placeCar: placeCar, startDir: startDir, GROUND_Y: GROUND_Y, scene: scene, camera: camera, renderer: renderer, SHOULDER: (typeof SHOULDER !== "undefined" ? SHOULDER : 1.8), startIdx: (typeof startIdx !== "undefined" ? startIdx : 0) }; } catch (e) {}
+  try { window.__DBG = { world: world, vehicle: vehicle, chassis: chassisBody, CL: CL, EL: EL, HW: HW, N: N, wallBodies: wallBodies, placeCar: placeCar, startDir: startDir, GROUND_Y: GROUND_Y, scene: scene, camera: camera, renderer: renderer, SHOULDER: (typeof SHOULDER !== "undefined" ? SHOULDER : 1.8), startIdx: (typeof startIdx !== "undefined" ? startIdx : 0), OFFROAD: OFFROAD, setMap: setMap, offroad: offroad }; } catch (e) {}
   try {
     Object.defineProperty(window.__DBG, "carMesh", { get: function () { return carMesh; } });
     window.__DBG.applyCar = applyCar;
@@ -2479,14 +2825,14 @@
     /* ---- read input ---- */
     var wIn = (keys.KeyW || keys.ArrowUp || touch.gas) ? 1 : 0;
     stepStart(raceDt, wIn);
-    if (start.active || garageOpen) { wIn = 0; thr = 0; }
+    if (start.active || uiBlocking() || offroad.done) { wIn = 0; thr = 0; }
     var sIn = (keys.KeyS || keys.ArrowDown || touch.brake) ? 1 : 0;
     var steerTarget = 0;
     if (keys.KeyA || keys.ArrowLeft || touch.left) steerTarget += 1;
     if (keys.KeyD || keys.ArrowRight || touch.right) steerTarget -= 1;
     var handbrake = !!keys.KeyB;
     var clutchPedal = 1;
-    if (garageOpen) { sIn = 0; steerTarget = 0; handbrake = false; thr = brk = steerNow = 0; driveFeel.steerDemand = driveFeel.counter = 0; }
+    if (uiBlocking()) { sIn = 0; steerTarget = 0; handbrake = false; thr = brk = steerNow = 0; driveFeel.steerDemand = driveFeel.counter = 0; }
 
     /* ---- car frame vectors ---- */
     _f.set(0, 0, 1).applyQuaternion(chassisBody.quaternion);   // nose = +Z local
@@ -2502,7 +2848,7 @@
     var counterTarget = fwdSpeed > 4 && prevGrounded >= 3 ?
       clamp(driveFeel.rearSlip * FEEL.COUNTER_GAIN, -FEEL.COUNTER_MAX, FEEL.COUNTER_MAX) * clamp((Math.abs(driveFeel.rearSlip) - 0.025) / 0.12, 0, 1) : 0;
     driveFeel.counter += (counterTarget - driveFeel.counter) * (1 - Math.exp(-dt * 7));
-    var desiredSteer = garageOpen ? 0 : clamp(driveFeel.steerDemand * steerLimit + driveFeel.counter, -steerLimit, steerLimit);
+    var desiredSteer = uiBlocking() ? 0 : clamp(driveFeel.steerDemand * steerLimit + driveFeel.counter, -steerLimit, steerLimit);
     var steerRate = desiredSteer * steerNow < 0 ? FEEL.STEER_RATE + 3 : FEEL.STEER_RATE;
     steerNow += (desiredSteer - steerNow) * (1 - Math.exp(-dt * steerRate));
     /* Wheel worldTransform includes this assisted steer: no second visual rotation. */
@@ -2655,7 +3001,7 @@
        slides — never oscillating in and out. Only the into-wall velocity is removed;
        speed along the wall is kept. A one-frame tunnel is pulled back gently, not
        snapped, so a fast hit reads as a firm scrape, not a bounce. ---- */
-    (function () {
+    if (MODE === "circuit") (function () {
       var pos = chassisBody.position;
       var ni = nearestIdx(pos.x, pos.z);
       var nn = nrm(ni.i);
@@ -2778,24 +3124,27 @@
     sun.position.set(chassisBody.position.x + 24, 74, chassisBody.position.z + 15);
     sun.target.position.copy(chassisBody.position);
 
-    /* ---- lap/sector timing and direction, independent of chassis orientation ---- */
-    var idx = near.i, progress = raceProgress(chassisBody.position.x, chassisBody.position.z);
-    var trackSpeed = chassisBody.velocity.x * progress.tx + chassisBody.velocity.z * progress.tz;
-    stepTiming(progress.index, raceDt, trackSpeed, progress.distance < HW + SHOULDER + 3);
-    wrongTime = !start.active && kmh > 15 && trackSpeed < -0.5 ? wrongTime + raceDt : 0;
-
-    /* ---- anti-stuck: fell well below the track surface, flipped, or lost off the map.
-       Wheel-contact count flickers at low speed, so it is NOT a trigger. ---- */
-    var refY = EL[near.i];
+    var idx = near.i;
     var upDot = new THREE.Vector3(0, 1, 0).applyQuaternion(chassisBody.quaternion).y;
-    var flipped = upDot < 0.25 && speed < 3;
-    var wayOff = near.d > HW + 20 && speed < 4;
-    var lost = near.d > HW + 40 || chassisBody.position.y < refY - 12;
-    if (flipped || wayOff || lost) stuckTimer += dt; else stuckTimer = 0;
-    if (stuckTimer > 2.2) {
-      stuckTimer = 0; invalidateLap();
-      var a2 = CL[idx], b2 = CL[(idx + 1) % N];
-      placeCar(a2[0], a2[1], Math.atan2(b2[0] - a2[0], b2[1] - a2[1]), EL[idx] + 1.4);
+    if (MODE === "circuit") {
+      /* ---- lap/sector timing and direction ---- */
+      var progress = raceProgress(chassisBody.position.x, chassisBody.position.z);
+      var trackSpeed = chassisBody.velocity.x * progress.tx + chassisBody.velocity.z * progress.tz;
+      stepTiming(progress.index, raceDt, trackSpeed, progress.distance < HW + SHOULDER + 3);
+      wrongTime = !start.active && kmh > 15 && trackSpeed < -0.5 ? wrongTime + raceDt : 0;
+      /* ---- anti-stuck: fell below the track, flipped, or lost off the map ---- */
+      var refY = EL[near.i];
+      var flipped = upDot < 0.25 && speed < 3;
+      var wayOff = near.d > HW + 20 && speed < 4;
+      var lost = near.d > HW + 40 || chassisBody.position.y < refY - 12;
+      if (flipped || wayOff || lost) stuckTimer += dt; else stuckTimer = 0;
+      if (stuckTimer > 2.2) {
+        stuckTimer = 0; invalidateLap();
+        var a2 = CL[idx], b2 = CL[(idx + 1) % N];
+        placeCar(a2[0], a2[1], Math.atan2(b2[0] - a2[0], b2[1] - a2[1]), EL[idx] + 1.4);
+      }
+    } else {
+      stepOffroad(raceDt, upDot, speed);
     }
 
     /* ---- camera ---- */
