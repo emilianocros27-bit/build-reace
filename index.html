@@ -305,7 +305,7 @@
 </div>
 
 <div class="hud hint" id="hint">
-  <b>W</b>/<b>&uarr;</b> gas &nbsp;·&nbsp; <b>S</b>/<b>&darr;</b> brake &nbsp;·&nbsp; <b>A</b> <b>D</b> steer &nbsp;·&nbsp; <b>Q</b>/<b>E</b> gear &nbsp;·&nbsp; <b>Shift</b> subir marcha &nbsp;·&nbsp; <b>Espacio</b> bajar marcha &nbsp;·&nbsp; <b>B</b> freno de mano &nbsp;·&nbsp; embrague automático &nbsp;·&nbsp; <b>M</b> mode &nbsp;·&nbsp; <b>C</b> cam &nbsp;·&nbsp; <b>R</b> reset
+  <b>W</b>/<b>&uarr;</b> acelerar &nbsp;·&nbsp; <b>S</b>/<b>&darr;</b> frenar &nbsp;·&nbsp; <b>A</b> <b>D</b> dirección &nbsp;·&nbsp; <b>Shift</b> subir marcha &nbsp;·&nbsp; <b>Espacio</b> bajar marcha &nbsp;·&nbsp; <b>B</b> freno de mano &nbsp;·&nbsp; <b>M</b> auto/manual &nbsp;·&nbsp; <b>C</b> cámara &nbsp;·&nbsp; <b>R</b> reiniciar
 </div>
 
 <div class="touch left">
@@ -1636,6 +1636,7 @@
     chassisBody: chassisBody, indexRightAxis: 0, indexUpAxis: 1, indexForwardAxis: 2
   });
   var REST = 0.42, TRAVEL = 0.34, BASE_SLIP = 1.7;
+  var SAG = 0.078;
   /* Round B: small, bounded changes; service-brake wheel settings stay original. */
   var FEEL = { FRONT_GRIP: 0.98, REAR_GRIP: 1.02, POWER_LOSS: 0.16,
     POWER_IN: 12, POWER_FULL: 28, POWER_FADE: 55, POWER_OUT: 100,
@@ -2533,10 +2534,10 @@
       var info = vehicle.wheelInfos[w];
       if (wheelDown[w]) grounded++;
       var sl = typeof info.suspensionLength === "number" ? info.suspensionLength : REST;
-      var comp = clamp((REST - sl) / TRAVEL, -1, 1);
+      var dyn = clamp((REST - SAG - sl) / TRAVEL, -1, 1);
       var se = suspEls[w];
-      se.lvl.style.height = ((0.5 + comp * 0.5) * 100).toFixed(1) + "%";
-      se.lvl.style.background = comp > 0.05 ? "var(--amber)" : comp < -0.05 ? "var(--coolant)" : "var(--signal)";
+      se.lvl.style.height = ((0.5 + dyn * 0.5) * 100).toFixed(1) + "%";
+      se.lvl.style.background = dyn > 0.06 ? "var(--amber)" : dyn < -0.06 ? "var(--coolant)" : "var(--signal)";
       se.mm.textContent = Math.round((REST - sl) * 1000);
     }
     prevGrounded = grounded;

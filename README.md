@@ -20,7 +20,7 @@ python3 -m http.server 8000
 | `W` / `↑` | Acelerar |
 | `S` / `↓` | Frenar (progresivo) |
 | `A` `D` / `← →` | Dirección |
-| `Q` / `E` | Bajar / subir marcha (modo manual) |
+| `Q` / `E` | Bajar / subir marcha (alternativa) |
 | `Shift` | Subir marcha (modo manual) |
 | `Espacio` | Bajar marcha (modo manual) |
 | `B` | Freno de mano |
