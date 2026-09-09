@@ -21,8 +21,10 @@ python3 -m http.server 8000
 | `S` / `↓` | Frenar (progresivo) |
 | `A` `D` / `← →` | Dirección |
 | `Q` / `E` | Bajar / subir marcha (modo manual) |
-| `Shift` | Embrague |
-| `Espacio` | Freno de mano |
+| `Shift` | Subir marcha (modo manual) |
+| `Espacio` | Bajar marcha (modo manual) |
+| `B` | Freno de mano |
+| — | Embrague automático |
 | `M` | Cambiar manual / automático |
 | `C` | Cambiar cámara |
 | `R` | Reiniciar coche |
