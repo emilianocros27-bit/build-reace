@@ -1838,7 +1838,26 @@
     }
     geo.setAttribute("color", new THREE.Float32BufferAttribute(col, 3));
     geo.computeVertexNormals();
-    var terrain = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1, metalness: 0 }));
+    function dirtTexture() {
+      var canvas = document.createElement("canvas"); canvas.width = canvas.height = 512;
+      var ctx = canvas.getContext("2d");
+      ctx.fillStyle = "#d0c9bc"; ctx.fillRect(0, 0, 512, 512);
+      for (var grain = 0; grain < 22000; grain++) {
+        var shade = 130 + (Math.random() * 110 | 0);
+        ctx.fillStyle = "rgb(" + shade + "," + shade + "," + (shade - 8) + ")";
+        var px = Math.random() * 512, py = Math.random() * 512;
+        var size = grain < 20000 ? 1 + Math.random() * 2 : 2 + Math.random() * 5;
+        ctx.fillRect(px, py, size, size * 0.65);
+        if (size > 3) {
+          ctx.fillStyle = "rgba(55,45,35,0.3)"; ctx.fillRect(px, py + size * 0.65, size, 1);
+        }
+      }
+      var texture = new THREE.CanvasTexture(canvas);
+      texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
+      texture.repeat.set(60, 60); texture.anisotropy = 4;
+      return texture;
+    }
+    var terrain = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ map: dirtTexture(), vertexColors: true, roughness: 1, metalness: 0 }));
     terrain.position.x = OX; terrain.receiveShadow = true; grp.add(terrain);
 
     /* ---- forest: dense instanced pines + oaks, off the trail, denser on slopes ---- */
@@ -2054,21 +2073,21 @@
       stats: { vel: 3, agarre: 3, manejo: 3 },
       colors: { body: 0xe23c2e, accent: 0x1c1f26, rim: 0xc6cbd2 },
       phys: { mass: 170, peakTq: 36, limiter: 7000, final: 5.2, gears: [3.6, 2.25, 1.62, 1.26, 1.04, 0.87],
-        rest: 0.42, travelF: 0.36, travelR: 0.30, rideDrop: 0 }, feel: {} },
-    { build: buildJeep, wheel: { front: { width: 0.34, radius: 0.52 }, rear: { width: 0.34, radius: 0.52 } },
+        dirtSlip: 1.05, dirtDrag: 90, rest: 0.42, travelF: 0.36, travelR: 0.30, rideDrop: 0 }, feel: {} },
+    { build: buildJeep, suspension: true, wheel: { front: { width: 0.34, radius: 0.58 }, rear: { width: 0.34, radius: 0.58 } },
       id: "jeep", name: "JEEP", tag: "4x4 real. Suspensión de mucho recorrido, trepa de todo. Lento pero imparable.",
       stats: { vel: 1, agarre: 3, manejo: 2 },
       colors: { body: 0xb63a2f, accent: 0x181818, rim: 0x2b2b2b },
-      phys: { mass: 235, peakTq: 42, limiter: 5600, final: 6.6, gears: [4.7, 2.8, 1.85, 1.36, 1.05, 0.86],
-        rest: 0.52, travelF: 0.60, travelR: 0.56, rideDrop: 0.45,
-        body: { box: [0.86, 0.34, 1.42], boxY: 0.10, sph: [1.35, -1.35], sphY: 0.05, sphR: 0.34 } },
+      phys: { mass: 235, awd: true, dirtSlip: 1.75, dirtDrag: 30, halfTrack: 0.82, wheelbaseScale: 1.12, peakTq: 52, limiter: 5600, final: 6.6, gears: [5.6, 2.8, 1.85, 1.36, 1.05, 0.86],
+        rest: 0.72, travelF: 0.80, travelR: 0.76, rideDrop: 0.65,
+        body: { box: [0.9632, 0.3808, 1.5904], boxY: 0.112, sph: [1.512, -1.512], sphY: 0.056, sphR: 0.3808 } },
       feel: { FRONT_GRIP: 1.04, REAR_GRIP: 1.06, FRONT_STIFF: 32, REAR_STIFF: 30,
         FRONT_COMP: 5.6, REAR_COMP: 5.2, FRONT_RELAX: 4.4, REAR_RELAX: 4.1,
         FRONT_ROLL: 0.026, REAR_ROLL: 0.028, STEER_RATE: 6, STEER_LAG: 12, YAW_CATCH: 1.1, KERB_ACCEL: 0.9 } }
   ];
   var currentCar = CARS[0], garageOpen = true, carRideDrop = 0;
   var MODE = "circuit", mapMenuOpen = false;
-  var offroad = { active: false, done: false, t: 0, best: 0, progress: 0, checkpoint: 0 };
+  var offroad = { active: false, done: false, t: 0, best: 0, progress: 0, checkpoint: 0, slowTimer: 0 };
   try { var savedBest = parseFloat(localStorage.getItem("ty.offroad.best")); if (savedBest > 0) offroad.best = savedBest; } catch (e) {}
   var driftFactor = 0;
   var driveFeel = { steerDemand: 0, counter: 0, powerSlip: 0, rearSlip: 0, lateral: 0,
@@ -2131,7 +2150,7 @@
   vehicle.addWheel(wheelDef(-0.85, -1.4));  // 3 RR (driven)
   vehicle.addToWorld(world);
 
-  var carMesh = new THREE.Group(), wheelMeshes = [];
+  var carMesh = new THREE.Group(), wheelMeshes = [], suspParts = null;
   var carPaint = new THREE.MeshStandardMaterial({ color: 0xe23c2e, roughness: 0.35, metalness: 0.15 });
   var carAccent = new THREE.MeshStandardMaterial({ color: 0x1c1f26, roughness: 0.5, metalness: 0.1 });
   var glass = new THREE.MeshStandardMaterial({ color: 0x121820, roughness: 0.15, metalness: 0.6 });
@@ -2183,24 +2202,13 @@
   part3(0.4, 0.12, 0.06, brakeMat, -0.6, 0.2, -2.02);
   }
 
-  /* Jeep Wrangler JL, 2-door — boxy, tall, lifted. The whole body sits high above
-     the axle line (y=0) so there is a big lifted-suspension gap over each tyre. */
+  /* Jeep Wrangler JL, 2-door: low tub and wide flares over the live axles. */
   function buildJeep(g, part3) {
-    var L = 0.66;   // body lift: everything rides this much above the axle centre
-    /* --- visible ladder frame + solid axles between the wheels (fills the lift gap) --- */
-    part3(0.22, 0.16, 3.2, carAccent, 0.62, 0.02, -0.05);   // frame rail L
-    part3(0.22, 0.16, 3.2, carAccent, -0.62, 0.02, -0.05);  // frame rail R
-    part3(1.5, 0.12, 0.16, carAccent, 0, 0.02, 1.35);       // cross-member front
-    part3(1.5, 0.12, 0.16, carAccent, 0, 0.02, -1.4);       // cross-member rear
-    part3(1.7, 0.2, 0.24, carAccent, 0, -0.04, 1.35);       // front live axle
-    part3(1.7, 0.2, 0.24, carAccent, 0, -0.04, -1.4);       // rear live axle
-    part3(0.28, 0.28, 0.28, carAccent, 0, -0.06, -1.4);     // rear diff pumpkin
-    part3(0.24, 0.24, 0.24, carAccent, -0.2, -0.06, 1.35);  // front diff (offset)
-    part3(0.12, 0.12, 2.5, carAccent, 0.05, -0.02, -0.1);   // driveshaft/transfer line
+    var L = 0.40;   // lower tub/fender lift; roof height and longitudinal dimensions stay fixed
     /* skid plate under the belly */
-    part3(0.8, 0.12, 1.4, carAccent, 0, L - 0.42, 0.1);
+    part3(0.8, 0.12, 1.4, carAccent, 0, L - 0.10, 0.1);
     /* main body tub */
-    part3(1.78, 0.62, 3.25, carPaint, 0, L + 0.25, -0.1);
+    part3(1.95, 0.62, 3.25, carPaint, 0, L + 0.25, -0.1);
     /* flat clamshell hood + power dome */
     part3(1.68, 0.10, 1.3, carPaint, 0, L + 0.55, 1.28);
     part3(0.66, 0.09, 0.8, carPaint, 0, L + 0.63, 1.34);
@@ -2208,8 +2216,8 @@
     part3(1.58, 0.62, 0.09, carPaint, 0, L + 0.95, 0.66, -0.2);
     part3(1.42, 0.5, 0.03, glass, 0, L + 0.93, 0.64, -0.2);
     /* hard top + rain gutters */
-    part3(1.6, 0.5, 1.8, carPaint, 0, L + 1.24, -0.45);
-    part3(1.66, 0.05, 1.9, carAccent, 0, L + 1.50, -0.45);
+    part3(1.6, 0.5, 1.8, carPaint, 0, 0.66 + 1.24, -0.45);
+    part3(1.66, 0.05, 1.9, carAccent, 0, 0.66 + 1.50, -0.45);
     /* rear panel + tailgate */
     part3(1.74, 0.64, 0.14, carPaint, 0, L + 0.26, -1.74);
     /* front grille block + 7 slots + round headlights */
@@ -2221,9 +2229,9 @@
       var hl = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.14, 0.06, 14), headMat);
       hl.rotation.x = Math.PI / 2; hl.position.set(side * 0.7, L + 0.5, 1.97);
       hl.castShadow = hl.receiveShadow = true; g.add(hl);
-      /* square flared fenders standing proud, arching high over each tyre */
-      part3(0.54, 0.16, 1.1, carAccent, side * 0.99, L + 0.02, 1.35);
-      part3(0.54, 0.16, 1.1, carAccent, side * 0.99, L + 0.02, -1.4);
+      /* Flares centre on the hubs in Z and reach +/-1.2544 m after body scaling. */
+      part3(0.72, 0.16, 1.24, carAccent, side * 0.76, L + 0.02, 1.35);
+      part3(0.72, 0.16, 1.24, carAccent, side * 0.76, L + 0.02, -1.4);
       /* rocker rails / side steps */
       part3(0.16, 0.12, 2.3, carAccent, side * 0.92, L - 0.18, -0.05);
       /* door body sides */
@@ -2241,10 +2249,12 @@
     /* A-pillars */
     part3(0.08, 0.7, 0.08, carAccent, 0.76, L + 0.96, 0.6, -0.2);
     part3(0.08, 0.7, 0.08, carAccent, -0.76, L + 0.96, 0.6, -0.2);
+    /* spare carrier overlaps both tailgate and spare */
+    part3(0.38, 0.28, 0.26, carAccent, 0.14, L + 0.4, -1.86);
     /* full-size spare on the swing gate */
     (function () {
       var spare = new THREE.Group();
-      var t = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.5, 0.3, 22), tyreMat);
+      var t = new THREE.Mesh(new THREE.CylinderGeometry(0.58 / 1.12, 0.58 / 1.12, 0.3, 22), tyreMat);
       t.rotation.x = Math.PI / 2; spare.add(t);
       var r = new THREE.Mesh(new THREE.CylinderGeometry(0.26, 0.26, 0.32, 16), rimMat);
       r.rotation.x = Math.PI / 2; spare.add(r);
@@ -2253,7 +2263,10 @@
       g.add(spare);
     })();
     /* snorkel up the passenger A-pillar */
-    part3(0.11, 1.05, 0.11, carAccent, 0.95, L + 0.6, 0.86);
+    part3(0.11, 1.05, 0.11, carAccent, 0.91, L + 0.6, 0.86);
+    part3(0.20, 0.15, 0.18, carAccent, 0.86, L + 0.18, 0.86);
+    /* Bake the larger body into its parts before batching. */
+    g.children.forEach(function (m) { m.position.multiplyScalar(1.12); m.scale.multiplyScalar(1.12); });
   }
 
   function buildWheel(g, mkMesh, opts) {
@@ -2278,12 +2291,89 @@
     cap.rotation.z = Math.PI / 2;
   }
 
+  /* Unbatched world-space links: the hubs supply articulation, the chassis supplies mounts. */
+  function buildSuspension() {
+    var group = new THREE.Group(); group.name = "jeep-suspension"; scene.add(group);
+    var metal = new THREE.MeshStandardMaterial({ color: 0x30343a, roughness: 0.65, metalness: 0.7 });
+    var coil = new THREE.MeshStandardMaterial({ color: 0xa8adb0, roughness: 0.4, metalness: 0.8 });
+    var parts = { group: group, materials: [metal, coil], axles: [], corners: [],
+      hubs: [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()],
+      up: new THREE.Vector3(0, 1, 0), dir: new THREE.Vector3(), rotation: new THREE.Quaternion() };
+    function mesh(geometry, material, parent) {
+      var m = new THREE.Mesh(geometry, material);
+      m.castShadow = m.receiveShadow = true; (parent || group).add(m); return m;
+    }
+    function bar(radius, material) { return mesh(new THREE.CylinderGeometry(radius, radius, 1, 10), material || metal); }
+    for (var axle = 0; axle < 2; axle++) {
+      parts.axles.push({ tube: bar(0.09), diff: mesh(new THREE.SphereGeometry(0.23, 14, 10), metal),
+        track: bar(0.035), mount: new THREE.Vector3(), end: new THREE.Vector3() });
+    }
+    for (var w = 0; w < 4; w++) {
+      var spring = new THREE.Group(); group.add(spring);
+      // Unit-length spring: Y scaling compresses the spacing with suspension travel.
+      for (var ring = 0; ring < 8; ring++) {
+        var loop = mesh(new THREE.TorusGeometry(0.13, 0.023, 6, 16), coil, spring);
+        loop.rotation.x = Math.PI / 2; loop.position.y = -0.5 + ring / 7;
+      }
+      parts.corners.push({ spring: spring, body: bar(0.065, carAccent), rod: bar(0.027, coil), arm: bar(0.045),
+        seat: new THREE.Vector3(), mount: new THREE.Vector3(), shockTop: new THREE.Vector3(),
+        shockEnd: new THREE.Vector3(), bodyEnd: new THREE.Vector3(), rodTop: new THREE.Vector3(), armTop: new THREE.Vector3() });
+    }
+    return parts;
+  }
+
+  function updateSuspension() {
+    var p = suspParts, scale = currentCar.phys.wheelbaseScale || 1;
+    p.rotation.copy(chassisBody.quaternion);
+    function frame(out, x, y, z) {
+      return out.set(x * scale, (y - 0.26) * scale, z * scale).applyQuaternion(p.rotation).add(chassisBody.position);
+    }
+    function link(mesh, a, b) {
+      p.dir.subVectors(b, a);
+      var length = p.dir.length();
+      mesh.position.copy(a).add(b).multiplyScalar(0.5);
+      mesh.quaternion.setFromUnitVectors(p.up, p.dir.multiplyScalar(1 / Math.max(length, 0.00001)));
+      mesh.scale.y = Math.max(length, 0.00001);
+    }
+    for (var w = 0; w < 4; w++) p.hubs[w].copy(vehicle.wheelInfos[w].worldTransform.position);
+    for (var a = 0; a < 2; a++) {
+      var left = p.hubs[a * 2], right = p.hubs[a * 2 + 1], axle = p.axles[a];
+      var z = a === 0 ? 1.35 : -1.4;
+      link(axle.tube, left, right);
+      axle.diff.position.copy(left).lerp(right, a === 0 ? 0.35 : 0.5);
+      axle.diff.quaternion.copy(axle.tube.quaternion);
+      frame(axle.mount, 0.65, 0.67, z + 0.12);
+      axle.end.copy(left).lerp(right, 0.88);
+      link(axle.track, axle.mount, axle.end);
+      for (var side = 0; side < 2; side++) {
+        var corner = p.corners[a * 2 + side], sign = side === 0 ? 1 : -1;
+        corner.seat.copy(left).lerp(right, side === 0 ? 0.12 : 0.88);
+        frame(corner.mount, sign * 0.65, 0.70, z);
+        link(corner.spring, corner.seat, corner.mount);
+        frame(corner.shockTop, sign * 0.78, 0.76, z + (a === 0 ? -0.24 : 0.24));
+        corner.shockEnd.copy(left).lerp(right, side === 0 ? 0.04 : 0.96);
+        // Overlapping body/rod sections telescope along the same angled axis.
+        corner.bodyEnd.copy(corner.shockTop).lerp(corner.shockEnd, 0.60);
+        corner.rodTop.copy(corner.shockTop).lerp(corner.shockEnd, 0.48);
+        link(corner.body, corner.shockTop, corner.bodyEnd);
+        link(corner.rod, corner.rodTop, corner.shockEnd);
+        frame(corner.armTop, sign * 0.65, 0.62, z + (a === 0 ? -0.85 : 0.85));
+        link(corner.arm, corner.armTop, corner.seat);
+      }
+    }
+  }
+
   function rebuildCarVisuals(spec) {
     function removeGroup(group) {
       group.traverse(function (o) { if (o.geometry) o.geometry.dispose(); });
       scene.remove(group);
     }
     removeGroup(carMesh); wheelMeshes.forEach(removeGroup);
+    if (suspParts) {
+      removeGroup(suspParts.group);
+      suspParts.materials.forEach(function (m) { m.dispose(); });
+      suspParts = null;
+    }
     carMesh = new THREE.Group(); carMesh.name = "car-" + spec.id;
     spec.build(carMesh, function (w, h, d, mat, x, y, z, rx) {
       var m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
@@ -2292,6 +2382,7 @@
     });
     carMesh.position.copy(chassisBody.position); carMesh.quaternion.copy(chassisBody.quaternion);
     batchVisuals(carMesh); scene.add(carMesh);
+    if (spec.suspension) suspParts = buildSuspension();
     wheelMeshes = [];
     for (var wi = 0; wi < 4; wi++) {
       var wg = new THREE.Group(); wg.name = "wheel-" + wi;
@@ -2326,6 +2417,8 @@
       wi.dampingCompression = front ? FEEL.FRONT_COMP : FEEL.REAR_COMP;
       wi.dampingRelaxation = front ? FEEL.FRONT_RELAX : FEEL.REAR_RELAX;
       wi.rollInfluence = front ? FEEL.FRONT_ROLL : FEEL.REAR_ROLL;
+      var mountScale = pv.wheelbaseScale || 1;
+      wi.chassisConnectionPointLocal.set((i % 2 === 0 ? 1 : -1) * (pv.halfTrack != null ? pv.halfTrack : 0.85 * mountScale), 0, (i < 2 ? 1.35 : -1.4) * mountScale);
       wi.radius = (front ? spec.wheel.front : spec.wheel.rear).radius;
       wi.suspensionRestLength = pv.rest != null ? pv.rest : REST;
       wi.maxSuspensionTravel = front ? (pv.travelF != null ? pv.travelF : 0.36)
@@ -2542,6 +2635,7 @@
   }
 
   function placeCar(x, z, yaw, dropY) {
+    offroad.slowTimer = 0;
     chassisBody.position.set(x, dropY || 1.15, z);
     chassisBody.quaternion.setFromAxisAngle(new CANNON.Vec3(0, 1, 0), yaw);
     chassisBody.velocity.set(0, 0, 0);
@@ -2821,7 +2915,7 @@
     splitUntil = raceClock + 3;
     if (split > 0 && (!lap.bestSectors[i] || split < lap.bestSectors[i])) { lap.bestSectors[i] = split; saveRecords(); }
   }
-  function stepOffroad(dt, upDot, speed) {
+  function stepOffroad(dt, upDot, speed, throttle) {
     var P = chassisBody.position;
     var nt = OFFROAD.nearestTrail(P.x, P.z);
     var tw = OFFROAD.trailWorld, last = tw.length - 1;
@@ -2848,8 +2942,14 @@
     var wayOff = nt.d > 60 && speed < 5;
     var beached = down < 2 && speed < 2 && P.y > groundH + 0.35;
     if (flipped || fell || wayOff || beached) stuckTimer += dt; else stuckTimer = 0;
-    if (stuckTimer > (beached ? 1.4 : 2.0)) {
-      stuckTimer = 0;
+    // Catch every sustained standstill, including upright two-wheel beaching.
+    // Menus, the countdown and the finish screen are intentional stops.
+    /* only rescue a driver who is actually asking for throttle — parking to
+       look around should never teleport you. */
+    var recoverSlow = !uiBlocking() && !start.active && !offroad.done && throttle > 0.15;
+    offroad.slowTimer = recoverSlow && speed * 3.6 < 1.5 ? offroad.slowTimer + dt : 0;
+    if (stuckTimer > (beached ? 1.4 : 2.0) || offroad.slowTimer >= 3) {
+      stuckTimer = 0; offroad.slowTimer = 0;
       var ci = Math.max(0, Math.min(last - 3, offroad.checkpoint));
       var a = tw[ci], b = tw[ci + 3];
       placeCar(a[0], a[1], Math.atan2(b[0] - a[0], b[1] - a[1]), a[2] + 2.6 + carRideDrop);
@@ -3052,7 +3152,7 @@
     var near = nearestIdx(chassisBody.position.x, chassisBody.position.z);
     var mudNow = MODE === "offroad" ? OFFROAD.mudAt(chassisBody.position.x, chassisBody.position.z) : 0;
     var onDirt = MODE === "offroad" || near.d > HW + 0.4;
-    var slip = (onDirt ? 1.15 : BASE_SLIP) * (1 - mudNow * 0.42);
+    var slip = (onDirt ? (currentCar.phys.dirtSlip != null ? currentCar.phys.dirtSlip : 1.15) : BASE_SLIP) * (1 - mudNow * 0.28);
     var powerTarget = powerSlipTarget(kmh, thr, steerNow, !onDirt && !brakingNow && gear > 0 && prevGrounded >= 3);
     driveFeel.powerSlip += (powerTarget - driveFeel.powerSlip) * (1 - Math.exp(-dt * (powerTarget > driveFeel.powerSlip ? 3 : 5)));
     for (var wf = 0; wf < 4; wf++) {
@@ -3112,7 +3212,7 @@
     limiterCut = Math.max(0, limiterCut - dt);
     var fuelCut = limiterCut > 0;
 
-    /* ---- drive force to rear wheels ----
+    /* ---- drive force: four wheels for AWD, rear wheels otherwise ----
        empirical: applyEngineForce(+F) pushes the chassis along local -Z, and the
        car's nose is +Z, so a forward gear needs a NEGATIVE engine force. */
     var tractive = 0;
@@ -3120,7 +3220,7 @@
       tractive = PEAK_TQ * tqf(engineRPM) * thr * ratioAbs * EFF / R_WHEEL * clutch;
     }
     if (gear < 0 && fwdSpeed < -7) tractive = 0;                 // reverse speed cap
-    /* clamp to what the rear tyres can actually put down — stops the grip/slip
+    /* clamp to what the driven tyres can actually put down — stops the grip/slip
        judder in low gears while keeping a strong launch */
     var gripCap = slip * chassisBody.mass * 9.82 * 0.55;
     if (tractive > gripCap) tractive = gripCap;
@@ -3131,11 +3231,11 @@
       engBrakeMag = PEAK_TQ * 0.10 * (engineRPM / LIMITER) * ratioAbs * EFF / R_WHEEL * clutch;
     }
     var engBrakeF = Math.sign(fwdSpeed) * engBrakeMag;           // opposes current motion
-    var rearEach = (engF + engBrakeF) * 0.5;
-    vehicle.applyEngineForce(rearEach, 2);
-    vehicle.applyEngineForce(rearEach, 3);
-    vehicle.applyEngineForce(0, 0);
-    vehicle.applyEngineForce(0, 1);
+    var driveEach = (engF + engBrakeF) * (currentCar.phys.awd ? 0.25 : 0.5);
+    vehicle.applyEngineForce(driveEach, 2);
+    vehicle.applyEngineForce(driveEach, 3);
+    vehicle.applyEngineForce(currentCar.phys.awd ? driveEach : 0, 0);
+    vehicle.applyEngineForce(currentCar.phys.awd ? driveEach : 0, 1);
 
     /* ---- brakes.  The service brake is applied as a horizontal force at the centre
        of mass, capped at ~0.9 g and scaled by the (already-ramped) pedal: exact,
@@ -3157,7 +3257,7 @@
 
     /* ---- aero drag + rolling + downforce (mild extra while braking to stay planted) ---- */
     if (speed > 0.05) {
-      var fMag = K_DRAG * speed * speed + K_ROLL * chassisBody.mass * 9.82 + (onDirt ? 90 : 0) + mudNow * 260;
+      var fMag = K_DRAG * speed * speed + K_ROLL * chassisBody.mass * 9.82 + (onDirt ? (currentCar.phys.dirtDrag != null ? currentCar.phys.dirtDrag : 90) : 0) + mudNow * 130;
       var sc = -fMag / speed;
       chassisBody.applyForce(new CANNON.Vec3(vel.x * sc, 0, vel.z * sc), chassisBody.position);
       chassisBody.applyForce(new CANNON.Vec3(0, -(K_DOWNF * speed * speed + (braking ? 220 * brk : 0)), 0), chassisBody.position);
@@ -3309,6 +3409,7 @@
       se.lvl.style.background = dyn > 0.06 ? "var(--amber)" : dyn < -0.06 ? "var(--coolant)" : "var(--signal)";
       se.mm.textContent = Math.round((REST - sl) * 1000);
     }
+    if (suspParts) updateSuspension();
     prevGrounded = grounded;
     brakeMat.emissiveIntensity += ((braking ? 1.5 : 0.12) - brakeMat.emissiveIntensity) * 0.3;
     for (var c2 = 0; c2 < cones.length; c2++) {
@@ -3341,7 +3442,7 @@
         placeCar(a2[0], a2[1], Math.atan2(b2[0] - a2[0], b2[1] - a2[1]), EL[idx] + 1.4);
       }
     } else {
-      stepOffroad(raceDt, upDot, speed);
+      stepOffroad(raceDt, upDot, speed, thr);
     }
 
     /* ---- camera ---- */
