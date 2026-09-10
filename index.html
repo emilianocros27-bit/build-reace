@@ -1677,6 +1677,16 @@
       grad.addColorStop(1, kind === "glass" ? "rgba(30,55,70,0.7)" : "rgba(60,45,25,0.34)");
       x.fillStyle = grad; x.fillRect(0, 0, 256, 256);
     }
+    if (kind === "carbon") {
+      for (var cy = 0; cy < 256; cy += 8) for (var cx = 0; cx < 256; cx += 8) {
+        x.fillStyle = (cx / 8 + cy / 8) % 2 ? "#7a8086" : "#b0b5ba"; x.fillRect(cx, cy, 8, 8);
+        x.fillStyle = "rgba(20,25,30,0.24)";
+        for (var strand = 0; strand < 4; strand++) {
+          if ((cx / 8 + cy / 8) % 2) x.fillRect(cx + strand * 2, cy, 1, 8);
+          else x.fillRect(cx, cy + strand * 2, 8, 1);
+        }
+      }
+    }
     if (kind === "bark") {
       for (var b = 0; b < 95; b++) {
         x.strokeStyle = b % 2 ? "#60574b" : "#c9c0ac"; x.lineWidth = 1 + rand() * 3;
@@ -1797,7 +1807,7 @@
     }
 
     /* mud: a few boggy stretches along the low parts of the trail. Returns 0..1. */
-    var MUD_ZONES = [[0.10, 0.16], [0.34, 0.42], [0.55, 0.60], [0.78, 0.83]];
+    var MUD_ZONES = [[0.08, 0.18], [0.23, 0.29], [0.32, 0.44], [0.52, 0.63], [0.68, 0.74], [0.77, 0.86]];
     function mudAt(x, z) {
       var nt = nearestTrail(x, z);
       if (nt.d > 11) return 0;
@@ -1817,7 +1827,7 @@
       var nt = nearestTrail(x, z), base = baseH(x, z), tg = nt.sy;
       /* wide flat driving surface, then a long gentle run-out to the hillside —
          a narrow slot with steep banks launches the truck at speed. */
-      var road = 9, shoulder = 40;
+      var road = 6.5, shoulder = 40;
       if (nt.d < road) return tg + (noise(x * 0.4, z * 0.4, 2) - 0.5) * 0.3;   // lightly rutted, flat
       if (nt.d < shoulder) {
         var s = (nt.d - road) / (shoulder - road);
@@ -1839,7 +1849,7 @@
     }
     /* Grade the sampled corridor, including intersecting trail sections. Bounding
        both cell-axis slopes to 0.17 bounds any triangle slope to sqrt(2)*0.17 < 0.25.
-       A two-cell buffer keeps the entire 9..40 m run-out inside the graded area. */
+       A two-cell buffer keeps the entire 6.5..40 m run-out inside the graded area. */
     var gradeMask = [], gradeEdges = [], maxStep = ES * 0.17;
     for (var gx = 0; gx <= SEG; gx++) {
       gradeMask[gx] = [];
@@ -1948,35 +1958,41 @@
       var pineM = new THREE.MeshStandardMaterial({ map: surfaceTexture("leaves"), color: 0x2f4a2a, roughness: 1 });
       var oakM = new THREE.MeshStandardMaterial({ map: surfaceTexture("leaves"), color: 0x486b34, roughness: 1 });
       var MAXT = 2600;
-      var trunk = new THREE.InstancedMesh(trunkG, trunkM, MAXT);
+      var trunk = new THREE.InstancedMesh(trunkG, trunkM, MAXT * 2);
       var pine = new THREE.InstancedMesh(pineG, pineM, MAXT);
       var oak = new THREE.InstancedMesh(oakG, oakM, MAXT);
       trunk.castShadow = pine.castShadow = oak.castShadow = true;
       var m = new THREE.Matrix4(), q = new THREE.Quaternion(), sc = new THREE.Vector3(), p = new THREE.Vector3();
-      var nP = 0, nO = 0, tries = 0;
+      var nP = 0, nO = 0, nT = 0, tries = 0;
       while ((nP + nO) < MAXT * 2 - 2 && tries < 90000) {
         tries++;
         var x = (Math.random() - 0.5) * SIZE * 0.97, z = (Math.random() - 0.5) * SIZE * 0.97;
+        if (tries % 3 === 0) {
+          var ti = Math.floor(Math.random() * (TLEN - 1)), ta = TRAIL[ti], tb = TRAIL[ti + 1];
+          var len = Math.hypot(tb[0] - ta[0], tb[1] - ta[1]) || 1;
+          var offset = (Math.random() < 0.5 ? -1 : 1) * (7.2 + Math.random() * 7);
+          x = ta[0] - (tb[1] - ta[1]) / len * offset; z = ta[1] + (tb[0] - ta[0]) / len * offset;
+        }
         var nt = nearestTrail(x, z);
-        if (nt.d < 10) continue;
+        if (nt.d < 7) continue;
         var slope = Math.abs(finalH(x + 2, z) - finalH(x - 2, z)) + Math.abs(finalH(x, z + 2) - finalH(x, z - 2));
         if (slope > 9) continue;                         // no trees on cliffs
-        var dens = 0.55 + Math.min(0.4, slope * 0.06) + (noise(x * 0.02, z * 0.02, 3) - 0.3) * 0.9;
+        var dens = nt.d < 15 ? 0.98 : 0.55 + Math.min(0.4, slope * 0.06) + (noise(x * 0.02, z * 0.02, 3) - 0.3) * 0.9;
         if (Math.random() > dens) continue;
         var y = finalH(x, z);
         var pine1 = Math.random() < 0.62;
-        var s = 0.7 + Math.random() * 0.8;
+        var s = 0.7 + Math.random() * (nt.d < 8 ? 0.4 : 0.8);
         q.setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.random() * 6.28);
         if (pine1 && nP < MAXT) {
-          p.set(OX + x, y + 1.7 * s, z); sc.set(s, s, s); m.compose(p, q, sc); trunk.setMatrixAt(nP, m);
+          p.set(OX + x, y + 1.7 * s, z); sc.set(s, s, s); m.compose(p, q, sc); trunk.setMatrixAt(nT++, m);
           p.set(OX + x, y + 4.6 * s, z); m.compose(p, q, sc); pine.setMatrixAt(nP, m); nP++;
         } else if (nO < MAXT) {
           p.set(OX + x, y + 1.6 * s, z); sc.set(s, s, s); q.setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.random() * 6.28);
-          m.compose(p, q, sc);
+          m.compose(p, q, sc); trunk.setMatrixAt(nT++, m);
           p.set(OX + x, y + 3.6 * s, z); m.compose(p, q, sc); oak.setMatrixAt(nO, m); nO++;
         }
       }
-      trunk.count = nP; pine.count = nP; oak.count = nO;
+      trunk.count = nT; pine.count = nP; oak.count = nO;
       trunk.instanceMatrix.needsUpdate = pine.instanceMatrix.needsUpdate = oak.instanceMatrix.needsUpdate = true;
       grp.add(trunk); grp.add(pine); grp.add(oak);
     })();
@@ -1994,8 +2010,8 @@
         for (var r = 0; r < 3 && n < 1200; r++) {
           var ang = Math.random() * 6.28, dist = 10 + Math.random() * 30;
           var x = TRAIL[t][0] + Math.cos(ang) * dist, z = TRAIL[t][1] + Math.sin(ang) * dist;
-          if (nearestTrail(x, z).d < 9) continue;           // keep the line clear
           var s = 0.4 + Math.random() * 2.8;
+          if (nearestTrail(x, z).d < Math.max(9, 6.5 + s)) continue; // clear the entire boulder
           q.setFromEuler(new THREE.Euler(Math.random(), Math.random() * 6.28, Math.random()));
           p.set(OX + x, finalH(x, z) + s * 0.25, z); sc.set(s, s * 0.82, s);
           m.compose(p, q, sc); rock.setMatrixAt(n++, m);
@@ -2026,7 +2042,8 @@
         var dx = b[0] - a[0], dz = b[1] - a[1], dl = Math.hypot(dx, dz) || 1;
         var nx = -dz / dl, nz = dx / dl;
         [-1, 1].forEach(function (side) {
-          var px = a[0] + nx * side * 6.5, pz = a[1] + nz * side * 6.5, gy = finalH(px, pz);
+          var px = a[0] + nx * side * 7.0, pz = a[1] + nz * side * 7.0, gy = finalH(px, pz);
+          if (nearestTrail(px, pz).d < 6.7) return;
           var post = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.08, 1.4, 6), postM);
           post.position.set(OX + px, gy + 0.7, pz); post.castShadow = true; grp.add(post);
           var tip = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.12, 0.34, 6), tipM);
@@ -2034,16 +2051,21 @@
         });
         if (t % 66 === 6) {
           var lx = a[0] + nx * (10 + Math.random() * 6), lz = a[1] + nz * (Math.random() < 0.5 ? -1 : 1) * (10 + Math.random() * 6);
-          var log = new THREE.Mesh(new THREE.CylinderGeometry(0.4, 0.5, 5 + Math.random() * 4, 7), logM);
+          var logLength = 5 + Math.random() * 4;
+          if (nearestTrail(lx, lz).d < 6.5 + logLength / 2 + 0.5) continue;
+          var log = new THREE.Mesh(new THREE.CylinderGeometry(0.4, 0.5, logLength, 7), logM);
           log.rotation.z = Math.PI / 2; log.rotation.y = Math.random() * 6.28;
           log.position.set(OX + lx, finalH(lx, lz) + 0.4, lz); log.castShadow = true; grp.add(log);
         }
       }
       /* tyre stack + a rusted wreck near the start as a "trailhead" */
+      var stackA = TRAIL[2], stackB = TRAIL[3], stackLen = Math.hypot(stackB[0] - stackA[0], stackB[1] - stackA[1]);
+      var stackX = stackA[0] - (stackB[1] - stackA[1]) / stackLen * 8.5;
+      var stackZ = stackA[1] + (stackB[0] - stackA[0]) / stackLen * 8.5;
       for (var ts = 0; ts < 5; ts++) {
         var ty = new THREE.Mesh(new THREE.TorusGeometry(0.5, 0.22, 6, 12), tyreM);
         ty.rotation.x = Math.PI / 2;
-        ty.position.set(OX + TRAIL[2][0] + 6, trailY[2] + 0.25 + ts * 0.42, TRAIL[2][1] + 5);
+        ty.position.set(OX + stackX, finalH(stackX, stackZ) + 0.25 + ts * 0.42, stackZ);
         grp.add(ty);
       }
       var wreck = new THREE.Group();
@@ -2147,9 +2169,11 @@
     SCRUB_GAIN: 0.075, WIND_GAIN: 0.018, KERB_GAIN: 0.045 };
   var BASE_FEEL = Object.assign({}, FEEL);
   var CARS = [
-    { build: buildAguila, wheel: { front: { width: 0.36, radius: 0.42 }, rear: { width: 0.36, radius: 0.42 } },
-      id: "aguila", name: "ÁGUILA", tag: "Monoplaza equilibrado. Rápido y preciso en asfalto.",
-      stats: { vel: 3, agarre: 3, manejo: 3 },
+    { id: "aguila", name: "ÁGUILA", build: buildFormula,
+      tag: "Monoplaza de efecto suelo · ligero, preciso y pegado al asfalto.",
+      wheel: { front: { width: 0.305, radius: 0.36 }, rear: { width: 0.405, radius: 0.36 } },
+      layout: { frontTrack: 0.80, rearTrack: 0.77, halfWheelbase: 1.80 },
+      stats: { vel: 4, agarre: 4, manejo: 3 },
       colors: { body: 0xe23c2e, accent: 0x1c1f26, rim: 0xc6cbd2 },
       phys: { mass: 170, peakTq: 36, limiter: 7000, final: 5.2, gears: [3.6, 2.25, 1.62, 1.26, 1.04, 0.87],
         dirtSlip: 1.05, dirtDrag: 90, rest: 0.42, travelF: 0.36, travelR: 0.30, rideDrop: 0 }, feel: {} },
@@ -2159,8 +2183,9 @@
       stats: { vel: 1, agarre: 3, manejo: 2 },
       colors: { body: 0xb63a2f, accent: 0x25282a, rim: 0x92989c },
       phys: { mass: 235, awd: true, halfTrack: 0.80, halfWheelbase: 1.23,
-        dirtSlip: 1.75, dirtDrag: 30, peakTq: 52, limiter: 5600, final: 6.6,
-        gears: [5.6, 4.0, 2.86, 2.04, 1.46, 1.04], rest: 0.60, travelF: 0.42, travelR: 0.42, rideDrop: 0.25,
+        dirtSlip: 1.75, dirtDrag: 30, peakTq: 52, limiter: 5000, final: 7.2, clutchLockSpeed: 1.8,
+        gears: [11.0, 7.75, 5.46, 3.84, 2.70, 1.90], rest: 0.60, travelF: 0.42, travelR: 0.42, rideDrop: 0.25,
+        offroadSusp: { rest: 0.71, travel: 0.56, stiffness: 6.8, compression: 2.0, rebound: 1.25 },
         body: { box: [0.62, 0.145, 1.70], boxY: -0.255, sph: [1.77, -1.77], sphY: -0.05, sphR: 0.15 } },
       feel: { FRONT_GRIP: 1.04, REAR_GRIP: 1.06, FRONT_STIFF: 9, REAR_STIFF: 9,
         FRONT_COMP: 2.8, REAR_COMP: 2.8, FRONT_RELAX: 3.2, REAR_RELAX: 3.2,
@@ -2259,43 +2284,113 @@
   jeepMaterial("lamp", 0xfff2cf, 0.24, 0.1, "glass");
   jeepMaterial("tail", 0xc02c22, 0.38, 0.1, "glass");
 
-  function buildAguila(g, part3) {
-  /* lower hull + tapered nose + cabin + haunches + wing */
-  part3(1.86, 0.34, 2.7, carPaint, 0, 0.02, -0.15);            // main tub
-  part3(1.5, 0.26, 1.5, carPaint, 0, 0.04, 1.55, -0.12);       // nose (angled down)
-  part3(1.9, 0.16, 1.0, carAccent, 0, 0.16, -1.55);         // rear deck
-  part3(1.44, 0.3, 1.0, glass, 0, 0.32, 0.08);              // cockpit surround (low)
-  part3(1.28, 0.28, 0.05, glass, 0, 0.36, 0.62, -0.5);      // windscreen rake
-  part3(0.28, 0.26, 1.4, carPaint, 0.9, 0.12, -0.1);           // left haunch
-  part3(0.28, 0.26, 1.4, carPaint, -0.9, 0.12, -0.1);          // right haunch
-  part3(1.9, 0.06, 0.4, carAccent, 0, 0.5, -1.75);          // wing plane
-  part3(0.08, 0.34, 0.34, trim, 0.78, 0.34, -1.7);          // wing endplate
-  part3(0.08, 0.34, 0.34, trim, -0.78, 0.34, -1.7);
-  part3(0.5, 0.12, 0.2, trim, 0, -0.05, 1.95);              // front splitter
-  part3(1.55, 0.04, 0.34, carAccent, 0, -0.04, 2.12);       // front wing plane
-  part3(0.05, 0.12, 0.3, trim, 0.62, 0.02, 2.12);           // wing pylon L
-  part3(0.05, 0.12, 0.3, trim, -0.62, 0.02, 2.12);          // wing pylon R
-  [-1, 1].forEach(function (side) {
-    part3(0.22, 0.05, 0.07, trim, side * 0.95, 0.43, 0.65);
-    part3(0.24, 0.13, 0.18, carAccent, side * 1.09, 0.47, 0.65);
-    part3(0.19, 0.09, 0.015, glass, side * 1.09, 0.47, 0.55);
-  });
-  /* cockpit: roll hoop, halo, driver helmet */
-  part3(0.5, 0.34, 0.22, carAccent, 0, 0.52, -0.35, 0.22);  // roll hoop
-  (function () {
-    var helmet = new THREE.Mesh(new THREE.SphereGeometry(0.16, 12, 10),
-      helmetMat);
-    helmet.position.set(0, 0.44, 0.0); helmet.castShadow = true; helmet.receiveShadow = true; g.add(helmet);
-    var halo = new THREE.Mesh(new THREE.TorusGeometry(0.34, 0.028, 6, 16, Math.PI), trim);
-    halo.rotation.x = Math.PI / 2; halo.rotation.z = Math.PI; halo.position.set(0, 0.5, 0.12);
-    halo.castShadow = halo.receiveShadow = true; g.add(halo);
-    var stalk = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.05, 0.3), trim);
-    stalk.position.set(0, 0.46, 0.5); stalk.castShadow = stalk.receiveShadow = true; g.add(stalk);
-  })();
-  part3(0.34, 0.14, 0.06, headMat, 0.56, 0.1, 2.18);
-  part3(0.34, 0.14, 0.06, headMat, -0.56, 0.1, 2.18);
-  part3(0.4, 0.12, 0.06, brakeMat, 0.6, 0.2, -2.02);
-  part3(0.4, 0.12, 0.06, brakeMat, -0.6, 0.2, -2.02);
+  var formulaMaterials = {};
+  function formulaMaterial(key, color, roughness, metalness, texture) {
+    formulaMaterials[key] = new THREE.MeshStandardMaterial({ color: color, roughness: roughness,
+      metalness: metalness, map: surfaceTexture(texture) });
+  }
+  formulaMaterial("paint", 0xe23c2e, 0.34, 0.25, "paint");
+  formulaMaterial("carbon", 0x252a30, 0.55, 0.30, "carbon");
+  formulaMaterial("rubber", 0x202124, 0.95, 0, "metal");
+  formulaMaterial("rim", 0x90979f, 0.35, 0.80, "metal");
+  formulaMaterial("helmet", 0xf1efe7, 0.30, 0.15, "paint");
+  formulaMaterial("visor", 0x405f70, 0.12, 0.45, "glass");
+  formulaMaterial("tail", 0xc52d22, 0.40, 0.1, "glass");
+
+  /* Stylised ground-effect single-seater, metres: 5.60 long, 2.00 wide.
+     Chassis origin rides ~0.70 m above ground; floor -0.64, airbox +0.25. */
+  function buildFormula(g, part3) {
+    var m = formulaMaterials;
+    function box(w, h, d, mat, x, y, z, rx) { return part3(w, h, d, mat, x, y, z, rx); }
+    function add(geo, mat, x, y, z) {
+      var o = new THREE.Mesh(geo, mat); o.position.set(x, y, z);
+      o.castShadow = o.receiveShadow = true; g.add(o); return o;
+    }
+    function bar(a, b, r, mat) {
+      var dir = new THREE.Vector3().subVectors(b, a);
+      var o = add(new THREE.CylinderGeometry(r, r, dir.length(), 10), mat, 0, 0, 0);
+      o.position.copy(a).add(b).multiplyScalar(0.5);
+      o.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.normalize());
+    }
+    function tapered(w1, w2, h1, h2, length, mat, y, z) {
+      var geo = new THREE.BoxGeometry(1, 1, length), p = geo.attributes.position;
+      for (var i = 0; i < p.count; i++) {
+        var front = p.getZ(i) > 0;
+        p.setX(i, p.getX(i) * (front ? w2 : w1));
+        p.setY(i, p.getY(i) * (front ? h2 : h1));
+      }
+      geo.computeVertexNormals(); return add(geo, mat, 0, y, z);
+    }
+    box(1.56, 0.055, 3.36, m.carbon, 0, -0.6125, -0.10); // continuous floor
+    tapered(0.60, 0.40, 0.34, 0.22, 1.35, m.paint, -0.33, 0.64); // survival cell
+    tapered(0.40, 0.14, 0.22, 0.08, 1.42, m.paint, -0.39, 1.95); // long nose
+    // Three low front-wing elements, joined by upswept endplates and nose pylons.
+    for (var e = 0; e < 3; e++) box(1.96, 0.035, 0.18, m.carbon, 0, -0.58 + e * 0.035, 2.71 - e * 0.16, -0.12);
+    [-1, 1].forEach(function (side) {
+      box(0.04, 0.23, 0.55, m.paint, side * 0.98, -0.49, 2.52, -0.16);
+      box(0.04, 0.15, 0.18, m.carbon, side * 0.075, -0.475, 2.53);
+      // Sidepod shelf above the floor leaves the inlet undercut legible.
+      box(0.48, 0.23, 1.65, m.paint, side * 0.53, -0.30, -0.38);
+      box(0.36, 0.14, 0.035, m.carbon, side * 0.54, -0.30, 0.46);
+      box(0.12, 0.20, 1.52, m.carbon, side * 0.38, -0.49, -0.40);
+      box(0.05, 0.09, 2.60, m.carbon, side * 0.78, -0.56, -0.27);
+      box(0.07, 0.23, 0.95, m.paint, side * 0.285, -0.19, -0.08); // cockpit rim
+      box(0.04, 0.04, 0.22, m.carbon, side * 0.37, -0.13, 0.56);
+      box(0.14, 0.09, 0.17, m.paint, side * 0.43, -0.09, 0.56);
+    });
+    box(0.49, 0.10, 0.82, m.carbon, 0, -0.32, -0.08); // open cockpit well
+    var helmet = add(new THREE.SphereGeometry(0.135, 20, 14), m.helmet, 0, -0.005, -0.22);
+    var visor = add(new THREE.SphereGeometry(0.139, 20, 8, 0, Math.PI, Math.PI * 0.36, Math.PI * 0.25), m.visor, 0, -0.005, -0.22);
+    // Halo: a continuous horseshoe, two rear feet and one central front pillar.
+    var points = [];
+    for (var i = 0; i <= 24; i++) {
+      var a = Math.PI * i / 24;
+      points.push(new THREE.Vector3(Math.cos(a) * 0.28, 0.10, -0.28 + Math.sin(a) * 0.63));
+    }
+    add(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(points), 32, 0.025, 8, false), m.carbon, 0, 0, 0);
+    [-1, 1].forEach(function (side) { bar(new THREE.Vector3(side * 0.28, -0.20, -0.28), new THREE.Vector3(side * 0.28, 0.10, -0.28), 0.025, m.carbon); });
+    bar(new THREE.Vector3(0, -0.23, 0.42), new THREE.Vector3(0, 0.10, 0.35), 0.025, m.carbon);
+    tapered(0.40, 0.48, 0.26, 0.40, 1.13, m.paint, -0.27, -1.09); // engine cover
+    box(0.22, 0.42, 0.26, m.paint, 0, 0.04, -0.64); // integrated airbox/roll hoop
+    box(0.15, 0.12, 0.025, m.carbon, 0, 0.16, -0.497);
+    // Diffuser, strakes and rear-wing supports attach to the floor/gearbox.
+    box(1.04, 0.05, 0.98, m.carbon, 0, -0.53, -1.90, 0.16);
+    [-0.44, -0.22, 0, 0.22, 0.44].forEach(function (x) { box(0.025, 0.14, 0.78, m.carbon, x, -0.56, -1.95); });
+    box(0.28, 0.22, 0.77, m.carbon, 0, -0.40, -1.78);
+    [-1, 1].forEach(function (side) {
+      box(0.045, 0.60, 0.14, m.carbon, side * 0.20, -0.18, -2.18);
+      box(0.035, 0.48, 0.63, m.paint, side * 0.64, -0.08, -2.485);
+    });
+    box(1.28, 0.06, 0.36, m.carbon, 0, 0.035, -2.48, -0.14);
+    box(1.28, 0.045, 0.22, m.paint, 0, 0.135, -2.60, -0.20);
+    box(0.10, 0.08, 0.055, m.tail, 0, -0.43, -2.25);
+    [1.8, -1.8].forEach(function (z) {
+      box(0.52, 0.10, 0.52, m.carbon, 0, -0.35, z);
+      box(0.44, 0.22, 0.10, m.carbon, 0, -0.25, z - 0.18);
+    });
+    // Exposed wishbones connect all four hubs to the narrow chassis.
+    [-1, 1].forEach(function (side) {
+      [1.8, -1.8].forEach(function (z) {
+        var x = side * (z > 0 ? 0.80 : 0.77);
+        [-0.24, 0.24].forEach(function (dz) {
+          bar(new THREE.Vector3(side * 0.24, -0.35, z + dz), new THREE.Vector3(x, -0.34, z), 0.02, m.carbon);
+        });
+        bar(new THREE.Vector3(side * 0.20, -0.18, z - 0.18), new THREE.Vector3(x, -0.36, z), 0.018, m.carbon);
+      });
+    });
+  }
+
+  function buildFormulaWheel(g, opts) {
+    var m = formulaMaterials, width = opts.width;
+    var tyre = new THREE.Mesh(new THREE.CylinderGeometry(0.36, 0.36, width, 48), m.rubber);
+    tyre.rotation.z = Math.PI / 2; g.add(tyre);
+    [-1, 1].forEach(function (side) {
+      var cover = new THREE.Mesh(new THREE.CylinderGeometry(0.2286, 0.2286, 0.014, 32), m.rim);
+      cover.rotation.z = Math.PI / 2; cover.position.x = side * (width / 2 + 0.001); g.add(cover);
+      var ring = new THREE.Mesh(new THREE.TorusGeometry(0.29, 0.007, 6, 40), m.paint);
+      ring.rotation.y = Math.PI / 2; ring.position.x = side * (width / 2 + 0.003); g.add(ring);
+    });
+    g.traverse(function (o) { if (o.isMesh) o.castShadow = o.receiveShadow = true; });
   }
 
   /* JL two-door, metres. Origin is the suspension mount plane; no global scaling.
@@ -2388,28 +2483,6 @@
     });
   }
 
-  function buildWheel(g, mkMesh, opts) {
-    var r = opts.radius, width = opts.width, scale = r / 0.42;
-    var tyre = mkMesh(new THREE.CylinderGeometry(r, r, width, 26), tyreMat);
-    tyre.rotation.z = Math.PI / 2;
-    [-1, 1].forEach(function (side) {
-      var shoulder = mkMesh(new THREE.TorusGeometry(r - 0.035, 0.025, 8, 26), tyreMat);
-      shoulder.rotation.y = Math.PI / 2; shoulder.position.x = side * (width / 2 - 0.025);
-    });
-    var disc = mkMesh(new THREE.CylinderGeometry(0.30 * scale, 0.30 * scale, 0.06, 20), discMat);
-    disc.rotation.z = Math.PI / 2;
-    var rim = mkMesh(new THREE.CylinderGeometry(0.27 * scale, 0.27 * scale, width - 0.06, 20), rimDark);
-    rim.rotation.z = Math.PI / 2;
-    for (var sk = 0; sk < 8; sk++) {
-      var spoke = mkMesh(new THREE.BoxGeometry(width + 0.06, 0.045 * scale, 0.05 * scale), rimMat);
-      spoke.rotation.x = sk / 8 * Math.PI;
-    }
-    var lip = mkMesh(new THREE.TorusGeometry(0.265 * scale, 0.03 * scale, 6, 20), rimMat);
-    lip.rotation.y = Math.PI / 2; lip.position.x = width / 2 - 0.01;
-    var cap = mkMesh(new THREE.CylinderGeometry(0.08 * scale, 0.08 * scale, width + 0.04, 10), rimMat);
-    cap.rotation.z = Math.PI / 2;
-  }
-
   /* Unbatched, named links use the same live wheel transforms as the physics. */
   function buildSuspension() {
     var group = new THREE.Group(); group.name = "jeep-suspension"; scene.add(group);
@@ -2430,7 +2503,7 @@
       var spring = new THREE.Group(); spring.name = "spring-" + w; group.add(spring);
       var rings = [];
       for (var r = 0; r < 8; r++) {
-        var ring = mesh(new THREE.TorusGeometry(0.083, 0.007, 6, 20), jeepMaterials.metal, "coil-" + w + "-" + r, spring);
+        var ring = mesh(new THREE.TorusGeometry(0.083, 0.006, 6, 20), jeepMaterials.metal, "coil-" + w + "-" + r, spring);
         ring.rotation.x = Math.PI / 2; rings.push(ring);
       }
       parts.corners.push({ spring: spring, rings: rings,
@@ -2477,7 +2550,7 @@
         var length = link(c.spring, c.seat, c.mount);
         // Preserve wire thickness: only ring spacing changes, endpoints stay inside seats.
         c.spring.scale.y = 1;
-        c.rings.forEach(function (ring, i) { ring.position.y = (i / 7 - 0.5) * Math.max(0, length - 0.014); });
+        c.rings.forEach(function (ring, i) { ring.position.y = (i / 7 - 0.5) * Math.max(0, length - 0.012); });
         c.spring.userData.length = length;
         frame(c.shockTop, sign * 0.70, 0.08, z + (a === 0 ? -0.16 : 0.16));
         c.shockEnd.copy(left).lerp(right, side === 0 ? 0.0625 : 0.9375);
@@ -2516,10 +2589,7 @@
     for (var wi = 0; wi < 4; wi++) {
       var wg = new THREE.Group(); wg.name = "wheel-" + wi;
       if (spec.id === "jeep") buildJeepWheel(wg);
-      else buildWheel(wg, function (geometry, material) {
-        var m = new THREE.Mesh(geometry, material); m.castShadow = m.receiveShadow = true;
-        wg.add(m); return m;
-      }, wi < 2 ? spec.wheel.front : spec.wheel.rear);
+      else buildFormulaWheel(wg, wi < 2 ? spec.wheel.front : spec.wheel.rear);
       var transform = vehicle.wheelInfos[wi].worldTransform;
       wg.position.copy(transform.position); wg.quaternion.copy(transform.quaternion);
       batchVisuals(wg); scene.add(wg); wheelMeshes.push(wg);
@@ -2532,6 +2602,17 @@
   var GEARS = [3.6, 2.25, 1.62, 1.26, 1.04, 0.87];  // 6-speed
   var FINAL = 5.2, REV_RATIO = 3.9, EFF = 0.9, PEAK_TQ = 36;
   var K_DRAG = 0.066, K_ROLL = 0.014, K_DOWNF = 0.045;
+
+  function configureSuspension() {
+    var pv = currentCar.phys, tune = MODE === "offroad" ? pv.offroadSusp : null;
+    vehicle.wheelInfos.forEach(function (wi, i) {
+      wi.suspensionRestLength = tune ? tune.rest : pv.rest;
+      wi.maxSuspensionTravel = tune ? tune.travel : (i < 2 ? pv.travelF : pv.travelR);
+      wi.suspensionStiffness = tune ? tune.stiffness : (i < 2 ? FEEL.FRONT_STIFF : FEEL.REAR_STIFF);
+      wi.dampingCompression = tune ? tune.compression : (i < 2 ? FEEL.FRONT_COMP : FEEL.REAR_COMP);
+      wi.dampingRelaxation = tune ? tune.rebound : (i < 2 ? FEEL.FRONT_RELAX : FEEL.REAR_RELAX);
+    });
+  }
 
   function applyCar(spec) {
     currentCar = spec;
@@ -2547,13 +2628,15 @@
       wi.dampingCompression = front ? FEEL.FRONT_COMP : FEEL.REAR_COMP;
       wi.dampingRelaxation = front ? FEEL.FRONT_RELAX : FEEL.REAR_RELAX;
       wi.rollInfluence = front ? FEEL.FRONT_ROLL : FEEL.REAR_ROLL;
-      wi.chassisConnectionPointLocal.set((i % 2 === 0 ? 1 : -1) * (pv.halfTrack != null ? pv.halfTrack : 0.85),
-        0, pv.halfWheelbase != null ? (i < 2 ? 1 : -1) * pv.halfWheelbase : (i < 2 ? 1.35 : -1.4));
+      var layout = spec.layout;
+      wi.chassisConnectionPointLocal.set((i % 2 === 0 ? 1 : -1) * (layout ? (front ? layout.frontTrack : layout.rearTrack) : pv.halfTrack),
+        0, (front ? 1 : -1) * (layout ? layout.halfWheelbase : pv.halfWheelbase));
       wi.radius = (front ? spec.wheel.front : spec.wheel.rear).radius;
       wi.suspensionRestLength = pv.rest != null ? pv.rest : REST;
       wi.maxSuspensionTravel = front ? (pv.travelF != null ? pv.travelF : 0.36)
                                      : (pv.travelR != null ? pv.travelR : 0.30);
     }
+    configureSuspension();
     carRideDrop = pv.rideDrop || 0;
     setChassisShapes(pv.body);
     carPaint.color.setHex(spec.colors.body);
@@ -2604,8 +2687,12 @@
           '<circle cx="40" cy="66" r="16" fill="#0b0f14"/><circle cx="104" cy="66" r="16" fill="#0b0f14"/>';
         hub = '<circle cx="40" cy="66" r="6" fill="' + rim + '"/><circle cx="104" cy="66" r="6" fill="' + rim + '"/>';
       } else {
-        silhouette = '<rect x="20" y="42" width="92" height="18" fill="' + body + '"/><path d="M94 42L133 53L136 60H94Z M47 42L59 29H83L99 42Z" fill="' + body + '"/><path d="M17 30H39V35H17Z M24 35H28V46H24Z M118 59H140V63H118Z" fill="' + accent + '"/><circle cx="38" cy="61" r="12" fill="#101318"/><circle cx="115" cy="61" r="12" fill="#101318"/>';
-        hub = '<circle cx="38" cy="61" r="6" fill="' + rim + '"/><circle cx="115" cy="61" r="6" fill="' + rim + '"/>';
+        silhouette = '<path d="M9 66H143V69H9Z M14 38H45V43H14Z M20 43H24V64H20Z" fill="' + accent + '"/>' +
+          '<path d="M27 61L51 52L66 49L73 35L80 36L86 51L112 59L139 64H27Z" fill="' + body + '"/>' +
+          '<path d="M67 49Q78 36 92 48M79 44L84 55" fill="none" stroke="' + accent + '" stroke-width="3"/>' +
+          '<path d="M117 65H144V68H117Z M14 36H43V39H14Z" fill="' + body + '"/>' +
+          '<rect x="26" y="54" width="21" height="20" rx="7" fill="#101318"/><rect x="112" y="56" width="15" height="18" rx="6" fill="#101318"/>';
+        hub = '<circle cx="36.5" cy="64" r="5" fill="' + rim + '"/><circle cx="119.5" cy="65" r="4.5" fill="' + rim + '"/>';
       }
       card.innerHTML = '<span class="car-name" role="heading" aria-level="2">' + spec.name + '</span>' +
         '<svg viewBox="0 0 150 86" aria-hidden="true">' + silhouette + hub + '</svg>' +
@@ -2794,6 +2881,7 @@
   function setMap(id) {
     if ((id === "offroad") === (MODE === "offroad")) { mapMenuOpen = false; return; }
     MODE = id === "offroad" ? "offroad" : "circuit";
+    configureSuspension();
     if (MODE === "offroad") {
       OFFROAD.bodies.forEach(function (b) { world.addBody(b); });
       OFFROAD.group.visible = true;
@@ -3282,6 +3370,8 @@
     thr += (wIn - thr) * Math.min(dt * 6, 1);
     brk = sIn ? Math.min(1, brk + dt * 1.15) : Math.max(0, brk - dt * 3.0);
     var brakingNow = brk > 0.02 || handbrake;
+    var jeepWild = MODE === "offroad" && currentCar.id === "jeep";
+    var jeepSpring = jeepWild ? currentCar.phys.offroadSusp : null;
 
     /* ---- off-track grip + brake-time suspension stiffening (kills dive AND lift) ---- */
     var near = nearestIdx(chassisBody.position.x, chassisBody.position.z);
@@ -3294,10 +3384,10 @@
       var wI = vehicle.wheelInfos[wf], fr = wf < 2;
       var gripScale = brakingNow || onDirt ? 1 : fr ? FEEL.FRONT_GRIP : FEEL.REAR_GRIP - FEEL.POWER_LOSS * driveFeel.powerSlip;
       wI.frictionSlip = (!fr && handbrake) ? 0.8 : slip * gripScale;
-      wI.suspensionStiffness = brakingNow ? (fr ? 42 : 34) : (fr ? FEEL.FRONT_STIFF : FEEL.REAR_STIFF);
-      wI.rollInfluence = brakingNow ? 0.02 : (fr ? FEEL.FRONT_ROLL : FEEL.REAR_ROLL);
-      wI.dampingCompression = brakingNow ? (fr ? 7.5 : 6.2) : (fr ? FEEL.FRONT_COMP : FEEL.REAR_COMP);
-      wI.dampingRelaxation = brakingNow ? (fr ? 4.2 : 3.6) : (fr ? FEEL.FRONT_RELAX : FEEL.REAR_RELAX);
+      wI.suspensionStiffness = jeepWild ? jeepSpring.stiffness : brakingNow ? (fr ? 42 : 34) : (fr ? FEEL.FRONT_STIFF : FEEL.REAR_STIFF);
+      wI.rollInfluence = brakingNow && !jeepWild ? 0.02 : (fr ? FEEL.FRONT_ROLL : FEEL.REAR_ROLL);
+      wI.dampingCompression = jeepWild ? jeepSpring.compression : brakingNow ? (fr ? 7.5 : 6.2) : (fr ? FEEL.FRONT_COMP : FEEL.REAR_COMP);
+      wI.dampingRelaxation = jeepWild ? jeepSpring.rebound : brakingNow ? (fr ? 4.2 : 3.6) : (fr ? FEEL.FRONT_RELAX : FEEL.REAR_RELAX);
     }
 
     /* ---- shift state ---- */
@@ -3325,10 +3415,11 @@
     /* ---- rpm / clutch ---- */
     var ratioAbs = gear > 0 ? GEARS[gear - 1] * FINAL : (gear < 0 ? REV_RATIO * FINAL : 0);
     var wheelRPM = Math.abs(fwdSpeed) / CIRC * 60;
-    var autoClutch;
+    var autoClutch, clutchLockSpeed = currentCar.phys.clutchLockSpeed || 5.5;
+    var clutchRamp = currentCar.phys.clutchLockSpeed ? clutchLockSpeed - 0.2 : 5.0;
     if (shiftTimer > 0) autoClutch = clamp(1 - shiftTimer / SHIFT_LEN, 0, 1);   // ramp back in, no dead hit
-    else if (gear !== 0 && Math.abs(fwdSpeed) < 5.5) {
-      autoClutch = clamp((Math.abs(fwdSpeed) - 0.2) / 5.0, 0, 1);
+    else if (gear !== 0 && Math.abs(fwdSpeed) < clutchLockSpeed) {
+      autoClutch = clamp((Math.abs(fwdSpeed) - 0.2) / clutchRamp, 0, 1);
       if (autoClutch < 0.25 && thr > 0.08) autoClutch = 0.25;      // ride the clutch on launch
     } else autoClutch = gear === 0 ? 0 : 1;
     var clutch = Math.min(autoClutch, clutchPedal);
@@ -3382,7 +3473,13 @@
       var gripA = prevGrounded / 4 * BASE_SLIP * 9.82 * 0.9;
       var bf = Math.min(wantA, gripA) * chassisBody.mass;
       var bs = -bf / speed;
-      chassisBody.applyForce(new CANNON.Vec3(vel.x * bs, 0, vel.z * bs), chassisBody.position);
+      var brakePoint = chassisBody.position;
+      if (jeepWild) {
+        // Tyre-level braking creates real load transfer instead of a COM-only stop.
+        brakePoint = new CANNON.Vec3(chassisBody.position.x,
+          chassisBody.position.y - (currentCar.wheel.front.radius + vehicle.wheelInfos[0].suspensionLength), chassisBody.position.z);
+      }
+      chassisBody.applyForce(new CANNON.Vec3(vel.x * bs, 0, vel.z * bs), brakePoint);
     }
     var fB = brk * 10, rB = brk * 8;
     if (handbrake) rB += 3000;
@@ -3395,7 +3492,7 @@
       var fMag = K_DRAG * speed * speed + K_ROLL * chassisBody.mass * 9.82 + (onDirt ? (currentCar.phys.dirtDrag != null ? currentCar.phys.dirtDrag : 90) : 0) + mudNow * 130;
       var sc = -fMag / speed;
       chassisBody.applyForce(new CANNON.Vec3(vel.x * sc, 0, vel.z * sc), chassisBody.position);
-      chassisBody.applyForce(new CANNON.Vec3(0, -(K_DOWNF * speed * speed + (braking ? 220 * brk : 0)), 0), chassisBody.position);
+      chassisBody.applyForce(new CANNON.Vec3(0, -(K_DOWNF * speed * speed + (braking && !jeepWild ? 220 * brk : 0)), 0), chassisBody.position);
     }
 
     /* Light zero-mean kerb ripple at the COM: no added pitch/roll torque. */
@@ -3412,7 +3509,7 @@
     if (!braking && prevGrounded >= 3 && Math.abs(driveFeel.rearSlip) > 0.18 && Math.abs(chassisBody.angularVelocity.y) > 0.7)
       chassisBody.angularVelocity.y *= Math.exp(-dt * FEEL.YAW_CATCH * driftFactor);
 
-    chassisBody.angularDamping = braking ? 0.7 : 0.4;
+    chassisBody.angularDamping = jeepWild ? 0.12 : braking ? 0.7 : 0.4;
 
     /* ---- step ---- */
     _prevPos.copy(chassisBody.position); impactBefore.copy(chassisBody.velocity);
@@ -3452,7 +3549,7 @@
     if (braking) {
       var gB = 0;
       for (var gb = 0; gb < 4; gb++) if (wheelDown[gb]) gB++;
-      if (gB >= 1) { chassisBody.angularVelocity.x *= 0.6; chassisBody.angularVelocity.z *= 0.6; }
+      if (gB >= 1 && !jeepWild) { chassisBody.angularVelocity.x *= 0.6; chassisBody.angularVelocity.z *= 0.6; }
     }
 
     /* ---- rollover guard.  While 2+ wheels are down the body may lean/dive up to
@@ -3475,20 +3572,20 @@
       _vB.set(gn.x, gn.y, gn.z);
       _qC.setFromUnitVectors(_uY, _vB);
       flat.premultiply(_qC);
-      TILT_MAX = 0.46;                                    // a 4x4 may lean hard on a side slope
+      TILT_MAX = jeepWild ? 0.72 : 0.46;                                    // a 4x4 may lean hard on a side slope
     }
     var dotq = Math.min(1, Math.abs(qT.x * flat.x + qT.y * flat.y + qT.z * flat.z + qT.w * flat.w));
     var tiltAng = 2 * Math.acos(dotq);
     if (gNow >= 2 && tiltAng > TILT_MAX) {
       qT.slerp(flat, Math.min(0.6, (tiltAng - TILT_MAX) / tiltAng));
       cq.set(qT.x, qT.y, qT.z, qT.w);
-      chassisBody.angularVelocity.x *= 0.5;
-      chassisBody.angularVelocity.z *= 0.5;
-    } else if (gNow < 2 && tiltAng > (MODE === "offroad" ? 0.34 : 0.5)) {   // airborne → level for the landing
-      qT.slerp(flat, Math.min(MODE === "offroad" ? 0.22 : 0.14, (tiltAng - 0.34) * 0.2));
+      chassisBody.angularVelocity.x *= jeepWild ? 0.94 : 0.5;
+      chassisBody.angularVelocity.z *= jeepWild ? 0.90 : 0.5;
+    } else if (gNow < 2 && tiltAng > (jeepWild ? 0.80 : MODE === "offroad" ? 0.34 : 0.5)) {   // airborne → level for the landing
+      qT.slerp(flat, Math.min(jeepWild ? 0.08 : MODE === "offroad" ? 0.22 : 0.14, (tiltAng - (jeepWild ? 0.80 : 0.34)) * 0.2));
       cq.set(qT.x, qT.y, qT.z, qT.w);
-      chassisBody.angularVelocity.x *= MODE === "offroad" ? 0.8 : 0.86;
-      chassisBody.angularVelocity.z *= MODE === "offroad" ? 0.8 : 0.86;
+      chassisBody.angularVelocity.x *= jeepWild ? 0.98 : MODE === "offroad" ? 0.8 : 0.86;
+      chassisBody.angularVelocity.z *= jeepWild ? 0.95 : MODE === "offroad" ? 0.8 : 0.86;
     }
 
     /* ---- rear-slip observation / sound and camera envelopes ---- */
