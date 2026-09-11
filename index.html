@@ -400,20 +400,31 @@
 
   var scene = new THREE.Scene();
 
-  /* bright Mexico-City midday: a big gradient sky dome + distance haze */
-  (function () {
-    var c = document.createElement("canvas"); c.width = 8; c.height = 256;
-    var x = c.getContext("2d");
-    var gr = x.createLinearGradient(0, 0, 0, 256);
-    gr.addColorStop(0, "#1f5fb8"); gr.addColorStop(0.5, "#5a97d7"); gr.addColorStop(0.86, "#a9c9e6"); gr.addColorStop(1, "#d3e2ee");
-    x.fillStyle = gr; x.fillRect(0, 0, 8, 256);
-    var sky = new THREE.Mesh(
-      new THREE.SphereGeometry(900, 24, 16),
-      new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(c), side: THREE.BackSide, fog: false, toneMapped: false })
-    );
-    scene.add(sky);
-  })();
+  /* A camera-centred, closed sky: the offroad world is 4.2 km from the circuit.
+     A fixed dome at (0,0,0) leaves that entire map outside its back faces. */
   scene.fog = new THREE.Fog(0x9fbfe0, 520, 1500);
+  scene.background = scene.fog.color.clone(); // never clear to black, even at a clip boundary
+  var sky = new THREE.Mesh(new THREE.SphereGeometry(900, 32, 20),
+    new THREE.ShaderMaterial({
+      uniforms: { horizonColor: { value: scene.fog.color }, zenithColor: { value: new THREE.Color(0x285e9c) } },
+      vertexShader: "varying vec3 skyDirection; void main() { skyDirection = position; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }",
+      fragmentShader: [
+        "uniform vec3 horizonColor; uniform vec3 zenithColor; varying vec3 skyDirection;",
+        "void main() {",
+        "  float altitude = normalize(skyDirection).y;",
+        "  vec3 color = mix(horizonColor, zenithColor, smoothstep(0.0, 0.8, altitude));",
+        "  gl_FragColor = vec4(color, 1.0);",
+        "  #include <encodings_fragment>",
+        "}"
+      ].join("\n"),
+      side: THREE.BackSide, depthWrite: false, fog: false, toneMapped: false
+    }));
+  sky.name = "continuous-sky"; sky.frustumCulled = false; sky.renderOrder = -1000;
+  sky.onBeforeRender = function (renderer, scene, viewCamera) {
+    viewCamera.getWorldPosition(sky.position);
+    sky.updateMatrixWorld(true); // also works for direct __DBG.renderer.render calls
+  };
+  scene.add(sky);
 
   var camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 2000);
   camera.position.set(12, 9, 20);
@@ -2277,38 +2288,67 @@
       wreck.rotation.y = 1.1; wreck.traverse(function (o) { o.castShadow = true; }); grp.add(wreck);
     })();
 
-    /* ---- distant ridge, forested skyline + a few faint buildings/antennas: the "disguise" ---- */
-    (function () {
-      var ridgeM = new THREE.MeshBasicMaterial({ color: 0x3f5344, fog: true });
-      var farM = new THREE.MeshBasicMaterial({ color: 0x51604f, fog: true });
-      for (var a = 0; a < 40; a++) {
-        var ang = a / 40 * 6.28;
-        var R1 = HALF + 40 + Math.random() * 30, h1 = 55 + Math.random() * 110;
-        var b1 = new THREE.Mesh(new THREE.ConeGeometry(28 + Math.random() * 40, h1, 4), ridgeM);
-        b1.position.set(OX + Math.cos(ang) * R1, maxY + h1 / 2 - 24, Math.sin(ang) * R1);
-        b1.rotation.y = Math.random() * 6.28; grp.add(b1);
-        var R2 = HALF + 130 + Math.random() * 70, h2 = 90 + Math.random() * 160;
-        var b2 = new THREE.Mesh(new THREE.ConeGeometry(60 + Math.random() * 70, h2, 4), farM);
-        b2.position.set(OX + Math.cos(ang) * R2, maxY + h2 / 2 - 30, Math.sin(ang) * R2); grp.add(b2);
+    /* Continuous visual apron: exact 0.25 m terrain boundary, then coarser
+       connected square rings. No physical bodies, no cones floating over void.
+       The outside edge is beyond full fog even from the highest heli camera. */
+    var horizon = (function () {
+      var pos = [], col = [], idx = [], rings = [];
+      function perimeter(i, count, radius) {
+        var side = Math.floor(i / count), t = (i % count) / count * 2 - 1;
+        if (side === 0) return [radius, t * radius];
+        if (side === 1) return [-t * radius, radius];
+        if (side === 2) return [-radius, -t * radius];
+        return [t * radius, -radius];
       }
-      var cityM = new THREE.MeshBasicMaterial({ color: 0x8a99a6, fog: true });
-      for (var c = 0; c < 9; c++) {
-        var ca = 0.7 + c * 0.5, cR = HALF + 55 + Math.random() * 35;
-        var cb = new THREE.Mesh(new THREE.BoxGeometry(9 + Math.random() * 15, 34 + Math.random() * 66, 9 + Math.random() * 15), cityM);
-        cb.position.set(OX + Math.cos(ca) * cR, maxY + 12 + Math.random() * 24, Math.sin(ca) * cR); grp.add(cb);
+      function addRing(radius, count) {
+        var ring = { first: pos.length / 3, count: count * 4, radius: radius };
+        for (var i = 0; i < ring.count; i++) {
+          var p = perimeter(i, count, radius), bx = p[0] * HALF / radius, bz = p[1] * HALF / radius;
+          var edge = finalH(bx, bz), d = radius - HALF, angle = Math.atan2(p[1], p[0]);
+          var blend = Math.min(1, d / 190); blend = blend * blend * (3 - 2 * blend);
+          var ridge = 55 + 34 * Math.sin(angle * 3 + 0.7) + 22 * Math.sin(angle * 7 - 1.1) + 12 * Math.sin(angle * 13);
+          var relief = maxY - 30 + ridge * Math.exp(-Math.pow((d - 290) / 210, 2))
+            + (38 + 22 * Math.sin(angle * 5 + 1.4)) * Math.exp(-Math.pow((d - 650) / 220, 2));
+          var h = edge * (1 - blend) + relief * blend;
+          pos.push(OX + p[0], h, p[1]);
+          var tint = new THREE.Color(0x4f6a37).lerp(new THREE.Color(0x657966), Math.min(1, d / 700));
+          var variation = 0.93 + 0.07 * Math.sin(angle * 11 + d * 0.008);
+          col.push(tint.r * variation, tint.g * variation, tint.b * variation);
+        }
+        rings.push(ring); return ring;
       }
-      var towerM = new THREE.MeshBasicMaterial({ color: 0x6d7a82, fog: true });
-      for (var w = 0; w < 3; w++) {
-        var wa = 1 + w * 2, wr = HALF + 90;
-        var tw2 = new THREE.Mesh(new THREE.CylinderGeometry(1.5, 4, 70, 4), towerM);
-        tw2.position.set(OX + Math.cos(wa) * wr, maxY + 20, Math.sin(wa) * wr); grp.add(tw2);
+      // Dense seam to first coarse ring: triangle fans retain every fine edge vertex.
+      var inner = addRing(HALF, FINE_SEG), outer = addRing(HALF + 28, SEG), ratio = FINE_SEG / SEG;
+      for (var j = 0; j < outer.count; j++) {
+        var next = (j + 1) % outer.count;
+        for (var k = 0; k < ratio; k++) {
+          var a = j * ratio + k, b = (a + 1) % inner.count;
+          idx.push(inner.first + a, inner.first + b, outer.first + j);
+        }
+        idx.push(inner.first + ((j + 1) * ratio) % inner.count, outer.first + next, outer.first + j);
       }
+      [85, 170, 280, 410, 570, 760, 1000, 1700, 3200].forEach(function (distance) {
+        var previous = outer; outer = addRing(HALF + distance, SEG);
+        for (var i = 0; i < outer.count; i++) {
+          var n = (i + 1) % outer.count;
+          idx.push(previous.first + i, previous.first + n, outer.first + i,
+            previous.first + n, outer.first + n, outer.first + i);
+        }
+      });
+      var geo = new THREE.BufferGeometry();
+      geo.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+      geo.setAttribute("color", new THREE.Float32BufferAttribute(col, 3));
+      geo.setIndex(idx); geo.computeVertexNormals(); geo.computeBoundingSphere();
+      var mesh = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide, fog: true }));
+      mesh.name = "offroad-continuous-horizon"; grp.add(mesh);
+      return { mesh: mesh, rings: rings, outerHalfSize: outer.radius, seamVertices: inner.count };
     })();
 
     scene.add(grp);
 
     var startYaw = Math.atan2(TRAIL[3][0] - TRAIL[0][0], TRAIL[3][1] - TRAIL[0][1]);
     return {
+      horizon: horizon,
       technical: { obstacles: obstacles, passingPlaces: passingPlaces, mudZones: MUD_ZONES,
         resolution: FINE_ES, shoulderMeshTolerance: meshTolerance, routeLength: routeLength, routePoint: routePoint, trackHalfWidth: trackHalfWidth },
       OX: OX, halfSize: HALF, group: grp, bodies: bodies, trail: TRAIL, groundY: groundY,
@@ -2473,6 +2513,28 @@
   vehicle.addWheel(wheelDef(0.85, -1.4));   // 2 RL (driven)
   vehicle.addWheel(wheelDef(-0.85, -1.4));  // 3 RR (driven)
   vehicle.addToWorld(world);
+
+  var wheelDown = [false, false, false, false];
+  var wheelTelemetry = vehicle.wheelInfos.map(function () { return {}; });
+  function captureWheelTelemetry() {
+    vehicle.wheelInfos.forEach(function (wi, i) {
+      var sample = wheelTelemetry[i];
+      sample.contact = wheelDown[i] = !!wi.isInContact;
+      sample.length = wi.suspensionLength;
+      sample.rest = wi.suspensionRestLength;
+      sample.travel = wi.maxSuspensionTravel;
+      sample.compressionMm = Math.round((sample.rest - sample.length) * 1000);
+    });
+  }
+  // updateWheelTransformWorld resets isInContact in Cannon 0.6.2. Visual sync
+  // must preserve it, and frames without a physics substep must retain the snapshot.
+  function updateWheelVisualTransform(i) {
+    var wi = vehicle.wheelInfos[i], contact = wi.isInContact;
+    vehicle.updateWheelTransform(i);
+    wi.isInContact = contact;
+  }
+  world.addEventListener("postStep", captureWheelTelemetry);
+
 
   var carMesh = new THREE.Group(), wheelMeshes = [], suspParts = null;
   var carPaint = new THREE.MeshStandardMaterial({ color: 0xe23c2e, roughness: 0.35, metalness: 0.15 });
@@ -2746,7 +2808,7 @@
     // Cannon clears isInContact here; restore it so this visual hook is read-only to contacts.
     for (var w = 0; w < 4; w++) {
       var wi = vehicle.wheelInfos[w], contact = wi.isInContact;
-      vehicle.updateWheelTransform(w); wi.isInContact = contact;
+      updateWheelVisualTransform(w); wi.isInContact = contact;
       p.hubs[w].copy(wi.worldTransform.position);
       if (wheelMeshes[w]) {
         wheelMeshes[w].position.copy(wi.worldTransform.position);
@@ -3066,8 +3128,9 @@
       vehicle.applyEngineForce(0, i);
       vehicle.setBrake(0, i);
       vehicle.setSteeringValue(0, i);
-      vehicle.updateWheelTransform(i);
+      updateWheelVisualTransform(i);
     }
+    captureWheelTelemetry();
     steerNow = 0;
   }
 
@@ -3080,6 +3143,7 @@
     chassisBody.force.set(0, 0, 0);
     chassisBody.torque.set(0, 0, 0);
     reseatVehicle(); resetFeel();
+    if (speedo) speedo.set(0);
   }
 
   function resetCar() {
@@ -3104,12 +3168,14 @@
       OFFROAD.bodies.forEach(function (b) { world.addBody(b); });
       OFFROAD.group.visible = true;
       ground.visible = false;
-      scene.fog.near = 120; scene.fog.far = 900;
+      scene.fog.near = 180; scene.fog.far = 1050; scene.fog.color.setHex(0xa8bcc6);
+      scene.background.copy(scene.fog.color);
     } else {
       OFFROAD.bodies.forEach(function (b) { world.removeBody(b); });
       OFFROAD.group.visible = false;
       ground.visible = true;
-      scene.fog.near = 520; scene.fog.far = 1500;
+      scene.fog.near = 520; scene.fog.far = 1500; scene.fog.color.setHex(0x9fbfe0);
+      scene.background.copy(scene.fog.color);
     }
     mapMenuOpen = false;
     gear = pendingGear = 1; shiftTimer = shiftCd = limiterCut = 0;
@@ -3123,12 +3189,13 @@
   var terrainSupport = { probes: bellyProbes, contacts: 0, maxPenetration: 0, totalLift: 0 };
   var bellyPoint = new CANNON.Vec3(), bellyVelocity = new CANNON.Vec3();
   var bellyFrom = new CANNON.Vec3(), bellyTo = new CANNON.Vec3(), bellyForce = new CANNON.Vec3();
-  var bellyHit = new CANNON.RaycastResult();
+  var bellyHit = new CANNON.RaycastResult(), bellyDepths = [];
   function supportOffroadChassis() {
     terrainSupport.contacts = 0; terrainSupport.maxPenetration = 0; terrainSupport.totalLift = 0;
     if (MODE !== "offroad") return;
-    var mass = chassisBody.mass, dt = world.dt || 1 / 60;
+    var mass = chassisBody.mass, dt = world.dt || 1 / 60, hits = 0;
     for (var i = 0; i < bellyProbes.length; i++) {
+      bellyDepths[i] = 0;
       chassisBody.pointToWorldFrame(bellyProbes[i], bellyPoint);
       // Start above the entire terrain, so deeply embedded/overturned probes
       // still find the TOP surface; never query from inside a Cannon pillar.
@@ -3139,8 +3206,21 @@
       if (!bellyHit.hasHit) continue;
       var depth = bellyHit.hitPointWorld.y - bellyPoint.y;
       if (depth <= 0) continue;
+      bellyDepths[i] = depth;
+      hits++;
+    }
+    if (!hits) return;
+    // The lift cap has to be shared between the probes that fire, not granted to
+    // each one: nosing into a bank tripped 17 probes at 1.5 g apiece, 51 kN on a
+    // 235 kg chassis, and threw the truck 390 m into the sky. Capping the TOTAL
+    // at 2 g means a deeply buried body is eased out over several frames instead.
+    var liftCap = mass * 9.82 * 2 / hits;
+    for (var i = 0; i < bellyProbes.length; i++) {
+      var depth = bellyDepths[i];
+      if (depth <= 0) continue;
+      chassisBody.pointToWorldFrame(bellyProbes[i], bellyPoint);
       chassisBody.getVelocityAtWorldPoint(bellyPoint, bellyVelocity);
-      var lift = clamp(mass * (70 * depth - 3 * bellyVelocity.y), 0, mass * 9.82 * 1.5);
+      var lift = clamp(mass * (70 * depth - 3 * bellyVelocity.y), 0, liftCap);
       var speed = Math.sqrt(bellyVelocity.x * bellyVelocity.x + bellyVelocity.z * bellyVelocity.z);
       var drag = speed > 0 ? Math.min(0.22 * lift / speed, mass / (bellyProbes.length * dt)) : 0;
       bellyForce.set(-bellyVelocity.x * drag, lift, -bellyVelocity.z * drag);
@@ -3268,15 +3348,15 @@
     return {
       el: el,
       set: function (v) {
-        disp += (v - disp) * o.resp;
+        disp = o.liveReadout && v === 0 ? 0 : disp + (v - disp) * o.resp;
         ndl.setAttribute("transform", "rotate(" + ang(disp) + " " + cx + " " + cy + ")");
-        dv.textContent = o.fmt ? o.fmt(disp) : Math.round(disp);
+        dv.textContent = o.fmt ? o.fmt(disp) : Math.round(o.liveReadout ? v : disp);
       }
     };
   }
   var tach = makeDial({ max: 8000, step: 1000, minor: 2, redFrom: 7000, unit: "RPM x1000", label: "TACHO",
     resp: 0.28, tick: function (v) { return v / 1000; }, fmt: function (v) { return Math.round(v / 50) * 50; } });
-  var speedo = makeDial({ max: 240, step: 40, minor: 4, unit: "KM / H", label: "SPEED", resp: 0.12 });
+  var speedo = makeDial({ max: 240, step: 40, minor: 4, unit: "KM / H", label: "SPEED", resp: 0.12, liveReadout: true });
   document.getElementById("tach").appendChild(tach.el);
   document.getElementById("speedo").appendChild(speedo.el);
 
@@ -3292,6 +3372,22 @@
   var elGas = document.getElementById("gasFill"), elBrk = document.getElementById("brkFill");
   var elGrip = document.getElementById("gripTxt"), elGear = document.getElementById("gearBig");
   var elLapCur = document.getElementById("lapCur"), elLapLast = document.getElementById("lapLast"), elLapBest = document.getElementById("lapBest");
+
+  function drawSuspensionTelemetry() {
+    wheelTelemetry.forEach(function (sample, i) {
+      var compression = sample.rest - sample.length;
+      var fraction = clamp(compression / Math.max(sample.travel, 0.001), -1, 1);
+      var se = suspEls[i];
+      se.lvl.style.height = ((0.5 + fraction * 0.5) * 100).toFixed(1) + "%";
+      se.lvl.style.background = sample.contact ? "var(--signal)" : "var(--coolant)";
+      se.mm.textContent = sample.compressionMm;
+      se.mm.title = "mm desde extensión en reposo · + compresión / − extensión";
+    });
+  }
+  function groundSpeedKmh() {
+    // Ground displacement in XZ: a spawn drop or suspension bounce is not travel.
+    return Math.hypot(chassisBody.velocity.x, chassisBody.velocity.z) * 3.6;
+  }
 
   /* ================= lap timing ================= */
   var lap = { running: false, t: 0, last: 0, best: 0, completed: 0, sector: 0, sectorStart: 0,
@@ -3563,7 +3659,6 @@
 
   /* ================= main loop ================= */
   var cl = new THREE.Clock(), steerNow = 0, bootHidden = false, stuckTimer = 0, prevGrounded = 4;
-  var wheelDown = [true, true, true, true];
   buildGarage();
   buildMapMenu();
   resetCar();
@@ -3572,6 +3667,12 @@
     Object.defineProperty(window.__DBG, "carMesh", { get: function () { return carMesh; } });
     window.__DBG.applyCar = applyCar;
     window.__DBG.cars = CARS;
+    window.__DBG.sky = sky;
+    window.__DBG.wheelTelemetry = wheelTelemetry;
+    window.__DBG.captureWheelTelemetry = captureWheelTelemetry;
+    window.__DBG.drawSuspensionTelemetry = drawSuspensionTelemetry;
+    window.__DBG.groundSpeedKmh = groundSpeedKmh;
+    window.__DBG.speedo = speedo;
     window.__DBG.terrainSupport = terrainSupport;
     window.__DBG.supportOffroadChassis = supportOffroadChassis;
     window.__DBG.updateSuspension = updateSuspension;
@@ -3772,7 +3873,6 @@
     /* ---- step ---- */
     _prevPos.copy(chassisBody.position); impactBefore.copy(chassisBody.velocity);
     world.step(1 / 60, dt, 8);
-    for (var wd = 0; wd < 4; wd++) wheelDown[wd] = vehicle.wheelInfos[wd].isInContact;
 
     /* ---- solid barrier: a continuous soft clamp against the visible wall face.
        Runs every frame (no jump gate) so the car settles flush against the wall and
@@ -3886,19 +3986,13 @@
     carMesh.quaternion.copy(chassisBody.quaternion);
     var grounded = 0;
     for (var w = 0; w < 4; w++) {
-      vehicle.updateWheelTransform(w);
+      updateWheelVisualTransform(w);
       var t = vehicle.wheelInfos[w].worldTransform;
       wheelMeshes[w].position.copy(t.position);
       wheelMeshes[w].quaternion.copy(t.quaternion);
-      var info = vehicle.wheelInfos[w];
       if (wheelDown[w]) grounded++;
-      var sl = typeof info.suspensionLength === "number" ? info.suspensionLength : REST;
-      var dyn = clamp((REST - SAG - sl) / TRAVEL, -1, 1);
-      var se = suspEls[w];
-      se.lvl.style.height = ((0.5 + dyn * 0.5) * 100).toFixed(1) + "%";
-      se.lvl.style.background = dyn > 0.06 ? "var(--amber)" : dyn < -0.06 ? "var(--coolant)" : "var(--signal)";
-      se.mm.textContent = Math.round((REST - sl) * 1000);
     }
+    drawSuspensionTelemetry();
     if (suspParts) updateSuspension();
     prevGrounded = grounded;
     brakeMat.emissiveIntensity += ((braking ? 1.5 : 0.12) - brakeMat.emissiveIntensity) * 0.3;
@@ -3979,7 +4073,7 @@
     /* ---- HUD ---- */
     var soundRPM = Math.min(LIMITER + 150, engineRPM + driveFeel.blip);
     tach.set(soundRPM);
-    speedo.set(kmh);
+    speedo.set(groundSpeedKmh());
     elGas.style.width = (thr * 100).toFixed(0) + "%";
     elBrk.style.width = ((handbrake ? 1 : brk) * 100).toFixed(0) + "%";
     elGear.textContent = gear < 0 ? "R" : gear === 0 ? "N" : gear;
