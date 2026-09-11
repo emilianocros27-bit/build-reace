@@ -1,0 +1,139 @@
+{
+  "method": {
+    "runtime": "Node with Cannon.js 0.6.2 (cached CDN library)",
+    "points": 525,
+    "initialHeight": "groundY + 0.85 m",
+    "heading": "previous-to-next trail point tangent",
+    "initialSpeed": 6,
+    "engineForcePerWheel": -1100,
+    "engineForceSign": "Cannon negative pushes local +Z",
+    "steps": 36,
+    "dt": 0.016666666666666666,
+    "spawnSettleSteps": 600,
+    "circuitRegression": "both cars: 600 steps, floor and barrier; identical trajectories; circuit world source unchanged"
+  },
+  "before": {
+    "points": 525,
+    "horizontalWallPoints": 69,
+    "heightfieldShapeContacts": 10217,
+    "medianAdvance": 4.418383973747566,
+    "below1_2": 2,
+    "minAdvance": 0.429212445203813,
+    "worstOldPoints": [
+      {
+        "i": 137,
+        "advance": 2.701363656924964,
+        "contacts": 101,
+        "bad": true
+      },
+      {
+        "i": 211,
+        "advance": 0.429212445203813,
+        "contacts": 395,
+        "bad": true
+      },
+      {
+        "i": 212,
+        "advance": 0.9268367386652151,
+        "contacts": 118,
+        "bad": true
+      },
+      {
+        "i": 213,
+        "advance": 5.862074440285083,
+        "contacts": 21,
+        "bad": true
+      }
+    ],
+    "spawn": {
+      "wheels": [
+        {
+          "contact": true,
+          "hubMinusRadius": -0.008632947491442167
+        },
+        {
+          "contact": true,
+          "hubMinusRadius": -0.0157880463443405
+        },
+        {
+          "contact": true,
+          "hubMinusRadius": 0.003987307548527497
+        },
+        {
+          "contact": true,
+          "hubMinusRadius": -0.0003411206324592797
+        }
+      ],
+      "heightAboveGround": 0.7087587680034204
+    },
+    "supportSteps": 0,
+    "maxPenetration": 0,
+    "obstacles": 40,
+    "resolution": 0.25
+  },
+  "after": {
+    "points": 525,
+    "horizontalWallPoints": 0,
+    "heightfieldShapeContacts": 0,
+    "medianAdvance": 6.082720553838174,
+    "below1_2": 0,
+    "minAdvance": 5.06590030284981,
+    "worstOldPoints": [
+      {
+        "i": 137,
+        "advance": 5.843901917100804,
+        "contacts": 0,
+        "bad": false
+      },
+      {
+        "i": 211,
+        "advance": 6.258358035339388,
+        "contacts": 0,
+        "bad": false
+      },
+      {
+        "i": 212,
+        "advance": 6.26775907526067,
+        "contacts": 0,
+        "bad": false
+      },
+      {
+        "i": 213,
+        "advance": 6.302141347481296,
+        "contacts": 0,
+        "bad": false
+      }
+    ],
+    "spawn": {
+      "wheels": [
+        {
+          "contact": true,
+          "hubMinusRadius": -0.008632947491442167
+        },
+        {
+          "contact": true,
+          "hubMinusRadius": -0.0157880463443405
+        },
+        {
+          "contact": true,
+          "hubMinusRadius": 0.003987307548527497
+        },
+        {
+          "contact": true,
+          "hubMinusRadius": -0.0003411206324592797
+        }
+      ],
+      "heightAboveGround": 0.7087587680034204
+    },
+    "supportSteps": 6560,
+    "maxPenetration": 0.20057980198074077,
+    "obstacles": 40,
+    "resolution": 0.25,
+    "bellyDrop": {
+      "heightAboveGround": 0.39462869848946913,
+      "verticalSpeed": -0.006518592886762985,
+      "peakPenetration": 0.243548253013105,
+      "contacts": 20
+    }
+  }
+}

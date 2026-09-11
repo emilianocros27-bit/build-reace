@@ -1708,7 +1708,7 @@
 
   var OFFROAD = (function () {
     var OX = 4200;
-    var SIZE = 560, SEG = 160, ES = SIZE / SEG;   // 3.5 m physics cells — coarser facets tip the truck
+    var SIZE = 560, SEG = 160, ES = SIZE / SEG;   // coarse background, refined to 0.25 m below
     var HALF = SIZE / 2;
 
     var noise = (function (seed) {
@@ -1764,6 +1764,34 @@
     }
     TRAIL.push(CP[CP.length - 1].slice());
     var TLEN = TRAIL.length;
+    // Distances in metres, not sample indices: stable widths and obstacle spacing.
+    var arc = [0];
+    for (var ai = 1; ai < TLEN; ai++) arc.push(arc[ai - 1] + Math.hypot(TRAIL[ai][0] - TRAIL[ai - 1][0], TRAIL[ai][1] - TRAIL[ai - 1][1]));
+    var routeLength = arc[TLEN - 1], passingPlaces = [];
+    for (var pi = 1; pi <= 8; pi++) passingPlaces.push(routeLength * pi / 9);
+    function ease(v) { v = Math.max(0, Math.min(1, v)); return v * v * (3 - 2 * v); }
+    function trackHalfWidth(along) {
+      var width = 1.5;
+      for (var i = 0; i < passingPlaces.length; i++) width = Math.max(width, 1.5 + 1 - ease((Math.abs(along - passingPlaces[i]) - 4) / 6));
+      return width;
+    }
+    function routePoint(along) {
+      along = Math.max(0, Math.min(routeLength, along));
+      var lo = 0, hi = TLEN - 1;
+      while (hi - lo > 1) { var mid = (lo + hi) >> 1; if (arc[mid] < along) lo = mid; else hi = mid; }
+      var f = (along - arc[lo]) / (arc[hi] - arc[lo]);
+      return { x: TRAIL[lo][0] + (TRAIL[hi][0] - TRAIL[lo][0]) * f, z: TRAIL[lo][1] + (TRAIL[hi][1] - TRAIL[lo][1]) * f };
+    }
+    // Nearby queries use a segment index; distant scenery retains an exact fallback.
+    var trailBins = {}, BIN = 16;
+    for (var bi = 0; bi < TLEN - 1; bi++) {
+      var ba = TRAIL[bi], bb = TRAIL[bi + 1];
+      for (var bx = Math.floor((Math.min(ba[0], bb[0]) - 24) / BIN); bx <= Math.floor((Math.max(ba[0], bb[0]) + 24) / BIN); bx++) {
+        for (var bz = Math.floor((Math.min(ba[1], bb[1]) - 24) / BIN); bz <= Math.floor((Math.max(ba[1], bb[1]) + 24) / BIN); bz++) {
+          var key = bx + "," + bz; if (!trailBins[key]) trailBins[key] = []; trailBins[key].push(bi);
+        }
+      }
+    }
     /* trail-surface elevation: mostly follows the terrain (so it rolls up and down),
        blended toward a low->high ramp so the route as a whole climbs from A to B,
        then heavily smoothed so the driving line is graded, never a staircase. */
@@ -1796,30 +1824,31 @@
        graded corridor is a ramp, never a staircase. */
     function nearestTrail(x, z) {
       var bd = 1e9, bi = 0, bf = 0;
-      for (var t = 0; t < TLEN - 1; t++) {
+      function probe(t) {
         var ax = TRAIL[t][0], az = TRAIL[t][1], bx = TRAIL[t + 1][0], bz = TRAIL[t + 1][1];
         var ex = bx - ax, ez = bz - az, len2 = ex * ex + ez * ez || 1;
-        var f = ((x - ax) * ex + (z - az) * ez) / len2; if (f < 0) f = 0; else if (f > 1) f = 1;
+        var f = clamp(((x - ax) * ex + (z - az) * ez) / len2, 0, 1);
         var cx = ax + ex * f, cz = az + ez * f, dd = (x - cx) * (x - cx) + (z - cz) * (z - cz);
         if (dd < bd) { bd = dd; bi = t; bf = f; }
       }
-      return { i: bi, f: bf, d: Math.sqrt(bd), sy: trailY[bi] + (trailY[bi + 1] - trailY[bi]) * bf };
+      var nearby = trailBins[Math.floor(x / BIN) + "," + Math.floor(z / BIN)];
+      if (nearby) for (var k = 0; k < nearby.length; k++) probe(nearby[k]);
+      if (bd > 24 * 24) for (var t = 0; t < TLEN - 1; t++) probe(t);
+      return { i: bi, f: bf, d: Math.sqrt(bd), along: arc[bi] + (arc[bi + 1] - arc[bi]) * bf,
+        sy: trailY[bi] + (trailY[bi + 1] - trailY[bi]) * bf };
     }
 
-    /* mud: a few boggy stretches along the low parts of the trail. Returns 0..1. */
-    var MUD_ZONES = [[0.08, 0.18], [0.23, 0.29], [0.32, 0.44], [0.52, 0.63], [0.68, 0.74], [0.77, 0.86]];
-    function mudAt(x, z) {
-      var nt = nearestTrail(x, z);
-      if (nt.d > 11) return 0;
-      var frac = (nt.i + nt.f) / (TLEN - 1), m = 0;
+    /* Bogs are assigned to real low points / ramp approaches after grading. */
+    var MUD_ZONES = [];
+    function mudAt(x, z) { return mudAtNearest(nearestTrail(x, z)); }
+    function mudAtNearest(nt) {
+      var width = trackHalfWidth(nt.along), m = 0;
+      if (nt.d > width + 0.5) return 0;
       for (var i = 0; i < MUD_ZONES.length; i++) {
-        var z0 = MUD_ZONES[i][0], z1 = MUD_ZONES[i][1];
-        if (frac > z0 && frac < z1) {
-          var e = Math.min(frac - z0, z1 - frac) / 0.02;
-          m = Math.max(m, Math.min(1, e));
-        }
+        var zone = MUD_ZONES[i];
+        m = Math.max(m, ease((nt.along - zone.start) / 2) * (1 - ease((nt.along - zone.end + 2) / 2)));
       }
-      return m * (1 - nt.d / 11);
+      return m * (1 - ease((nt.d - width + 0.3) / 0.8));
     }
 
     /* final terrain height: near the trail, ramp base -> graded corridor height */
@@ -1827,7 +1856,7 @@
       var nt = nearestTrail(x, z), base = baseH(x, z), tg = nt.sy;
       /* wide flat driving surface, then a long gentle run-out to the hillside —
          a narrow slot with steep banks launches the truck at speed. */
-      var road = 6.5, shoulder = 40;
+      var road = trackHalfWidth(nt.along), shoulder = 40; // 1.5 m normally, 2.5 m in eight lay-bys
       if (nt.d < road) return tg + (noise(x * 0.4, z * 0.4, 2) - 0.5) * 0.3;   // lightly rutted, flat
       if (nt.d < shoulder) {
         var s = (nt.d - road) / (shoulder - road);
@@ -1848,9 +1877,9 @@
       }
     }
     /* Grade the sampled corridor, including intersecting trail sections. Bounding
-       both cell-axis slopes to 0.17 bounds any triangle slope to sqrt(2)*0.17 < 0.25.
-       A two-cell buffer keeps the entire 6.5..40 m run-out inside the graded area. */
-    var gradeMask = [], gradeEdges = [], maxStep = ES * 0.17;
+       background cell-axis slopes to 0.08 leaves room for gentle obstacle run-outs.
+       A two-cell buffer keeps the entire verge..40 m run-out inside the graded area. */
+    var gradeMask = [], gradeEdges = [], maxStep = ES * 0.08;
     for (var gx = 0; gx <= SEG; gx++) {
       gradeMask[gx] = [];
       for (var gz = 0; gz <= SEG; gz++) gradeMask[gx][gz] = nearestTrail(gx * ES - HALF, HALF - gz * ES).d <= 40 + 2 * ES;
@@ -1888,8 +1917,173 @@
     minY = Infinity; maxY = -Infinity;
     data.forEach(function (row) { row.forEach(function (h) { minY = Math.min(minY, h); maxY = Math.max(maxY, h); }); });
     trailY = TRAIL.map(function (p) { return finalH(p[0], p[1]); });
-    var hfBody = new CANNON.Body({ mass: 0, material: roadMat });
-    hfBody.addShape(new CANNON.Heightfield(data, { elementSize: ES }));
+    /* Discrete technical sections. Their footprint never overlaps another section;
+       ordinary trail and all eight passing places stay free of constructed obstacles. */
+    var obstacles = [], requested = [];
+    for (var si = 0; si < 24; si++) requested.push({ type: "ledge", height: 0.15 + (si % 4) * 0.05, length: 5, radius: 17 });
+    for (var ri = 0; ri < 6; ri++) requested.push({ type: "ruts", depth: 0.15 + (ri % 3) * 0.05, length: 14, radius: 10 });
+    for (var wi = 0; wi < 3; wi++) requested.push({ type: "whoops", height: 0.24, count: 4, wavelength: 4, length: 16, radius: 18 });
+    [15, 18, 22, 25].forEach(function (angle) { requested.push({ type: "camber", degrees: angle, length: 18, radius: 18 }); });
+    [0.50, 0.65, 0.80].forEach(function (height) { requested.push({ type: "ramp", height: height, length: 16, radius: 20 }); });
+    // Place the largest footprints first; distribute the remaining ledges in the gaps.
+    requested.sort(function (a, b) { return b.radius - a.radius; });
+    requested.forEach(function (ob, order) {
+      var best = null, bestScore = -Infinity;
+      for (var at = 35; at < routeLength - 35; at += 3) {
+        var p = routePoint(at), before = routePoint(at - ob.length / 2), after = routePoint(at + ob.length / 2);
+        var dx = after.x - before.x, dz = after.z - before.z, len = Math.hypot(dx, dz);
+        if (len < ob.length * 0.985) continue; // avoid bends and switchback apexes
+        var clear = Math.min(at, routeLength - at), valid = true;
+        for (var j = 0; j < passingPlaces.length; j++) if (Math.abs(at - passingPlaces[j]) < ob.length / 2 + 12) valid = false;
+        for (var j = 0; j < obstacles.length; j++) {
+          var d = Math.hypot(p.x - obstacles[j].x, p.z - obstacles[j].z) - ob.radius - obstacles[j].radius;
+          if (d < 1) valid = false; clear = Math.min(clear, d);
+        }
+        if (!valid) continue;
+        // Deterministic dispersed placement, with no dependency on decorative randomness.
+        var score = clear + Math.sin(at * 0.013 + order) * 4;
+        if (score > bestScore) { bestScore = score; best = { x: p.x, z: p.z, tx: dx / len, tz: dz / len, along: at }; }
+      }
+      if (!best) throw new Error("No clear site for trail obstacle " + ob.type);
+      Object.assign(ob, best); ob.id = ob.type + "-" + order; obstacles.push(ob);
+    });
+    obstacles.sort(function (a, b) { return a.along - b.along; });
+    function obstacleHeight(ob, x, z) {
+      var dx = x - ob.x, dz = z - ob.z;
+      var t = dx * ob.tx + dz * ob.tz, u = -dx * ob.tz + dz * ob.tx, side = Math.abs(u);
+      var lateral = 1 - ease((side - 1.5) / 14), h = 0;
+      if (ob.type === "ledge") {
+        // One tyre-sized rise with a one-metre bevel, then a broad, gentle descent.
+        h = ob.height * ease((t + 2.5) / 1) * (1 - ease((t - 0.3) / 2.2));
+      } else if (ob.type === "ramp") {
+        // Even the 0.8 m set piece has a 5 m approach and a 5 m exit, never a square wall.
+        h = ob.height * ease((t + 8) / 5) * (1 - ease((t - 3) / 5));
+      } else if (ob.type === "ruts") {
+        var groove = Math.max(0, 1 - Math.pow((Math.abs(u) - 0.80) / 0.50, 2));
+        // A scuffed centre ridge gives the long belly clearance entering deep ruts.
+        var centreRelief = 0.06 * (1 - ease(side / 0.65));
+        return -(ob.depth * groove * groove + centreRelief) * ease((t + 7) / 3) * (1 - ease((t - 4) / 3));
+      } else if (ob.type === "whoops") {
+        var phase = (t + 8) / ob.wavelength;
+        if (t < -8 || t > 8) return 0;
+        h = ob.height * 0.5 * (1 - Math.cos(phase * Math.PI * 2));
+      } else if (ob.type === "camber") {
+        // Full 15..25 degree tilt under the wheel tracks, rounding flat at the verge.
+        var profile = side <= 1 ? side : side < 1.5 ? 1 + (side - 1) - Math.pow(side - 1, 2) : 1.25;
+        h = Math.sign(u) * Math.tan(ob.degrees * Math.PI / 180) * profile * ease((t + 9) / 4) * (1 - ease((t - 5) / 4));
+      }
+      return h * lateral;
+    }
+    /* One continuous heightfield: no overlay colliders hiding rut bottoms. Fine
+       cells are 0.25 m; only cells near the trail/features get fine render geometry. */
+    var DETAIL = 14, FINE_ES = ES / DETAIL, FINE_SEG = SEG * DETAIL, gradedH = finalH;
+    var fineData = [], detailCells = [];
+    for (var gx = 0; gx <= FINE_SEG; gx++) {
+      var fineRow = new Float32Array(FINE_SEG + 1), x = gx * FINE_ES - HALF;
+      for (var gz = 0; gz <= FINE_SEG; gz++) fineRow[gz] = gradedH(x, HALF - gz * FINE_ES);
+      fineData.push(fineRow);
+    }
+    for (var cx = 0; cx < SEG; cx++) {
+      detailCells[cx] = [];
+      for (var cz = 0; cz < SEG; cz++) {
+        var x = (cx + 0.5) * ES - HALF, z = HALF - (cz + 0.5) * ES;
+        var nt = nearestTrail(x, z);
+        var detailed = nt.d < trackHalfWidth(nt.along) + 3;
+        for (var oi = 0; oi < obstacles.length && !detailed; oi++) {
+          if (Math.abs(x - obstacles[oi].x) < obstacles[oi].radius + ES && Math.abs(z - obstacles[oi].z) < obstacles[oi].radius + ES) detailed = true;
+        }
+        detailCells[cx][cz] = detailed;
+      }
+    }
+    obstacles.forEach(function (ob) {
+      var x0 = Math.max(0, Math.floor((ob.x - ob.radius - 1 + HALF) / FINE_ES));
+      var x1 = Math.min(FINE_SEG, Math.ceil((ob.x + ob.radius + 1 + HALF) / FINE_ES));
+      var z0 = Math.max(0, Math.floor((HALF - ob.z - ob.radius - 1) / FINE_ES));
+      var z1 = Math.min(FINE_SEG, Math.ceil((HALF - ob.z + ob.radius + 1) / FINE_ES));
+      var lower = [], upper = [], mask = [], limit = 0.17 * FINE_ES;
+      for (var x = x0; x <= x1; x++) {
+        var lo = new Float64Array(z1 - z0 + 1), hi = new Float64Array(z1 - z0 + 1), flags = new Uint8Array(z1 - z0 + 1);
+        for (var z = z0; z <= z1; z++) {
+          var wx = x * FINE_ES - HALF, wz = HALF - z * FINE_ES;
+          fineData[x][z] += obstacleHeight(ob, wx, wz);
+          lo[z - z0] = fineData[x][z]; hi[z - z0] = -fineData[x][z];
+          var nt = nearestTrail(wx, wz);
+          flags[z - z0] = nt.d >= trackHalfWidth(nt.along) - 0.5 ? 1 : 0;
+        }
+        lower.push(lo); upper.push(hi); mask.push(flags);
+      }
+      // Keep intentional camber/ruts INSIDE the track. Outside it, every triangle
+      // is limited to sqrt(2)*0.17 = 0.24042 m/m, including ledge/ramp shoulders.
+      var changed = true, pass = 0, width = x1 - x0 + 1, depth = z1 - z0 + 1;
+      function relax(x, z, nx, nz) {
+        if (!mask[x][z] || !mask[nx][nz]) return;
+        for (var n = 0; n < 2; n++) {
+          var f = n ? upper : lower, a = f[x][z], b = f[nx][nz];
+          if (a > b + limit + 1e-9) { f[x][z] = b + limit; changed = true; }
+          else if (b > a + limit + 1e-9) { f[nx][nz] = a + limit; changed = true; }
+        }
+      }
+      while (changed) {
+        changed = false;
+        for (var i = 0; i < width; i++) for (var j = 0; j < depth; j++) {
+          var x = pass % 2 ? width - 1 - i : i, z = pass % 2 ? depth - 1 - j : j;
+          if (x + 1 < width) relax(x, z, x + 1, z);
+          if (z + 1 < depth) relax(x, z, x, z + 1);
+        }
+        pass++;
+      }
+      for (var x = x0; x <= x1; x++) for (var z = z0; z <= z1; z++) {
+        if (mask[x - x0][z - z0]) fineData[x][z] = (lower[x - x0][z - z0] - upper[x - x0][z - z0]) * 0.5;
+      }
+    });
+    finalH = function (x, z) {
+      var fx = clamp((x + HALF) / FINE_ES, 0, FINE_SEG), fz = clamp((HALF - z) / FINE_ES, 0, FINE_SEG);
+      var ix = Math.min(FINE_SEG - 1, Math.floor(fx)), iz = Math.min(FINE_SEG - 1, Math.floor(fz));
+      var u = fx - ix, v = fz - iz;
+      if (u + v <= 1) return fineData[ix][iz] + u * (fineData[ix + 1][iz] - fineData[ix][iz]) + v * (fineData[ix][iz + 1] - fineData[ix][iz]);
+      return fineData[ix + 1][iz + 1] + (1 - u) * (fineData[ix][iz + 1] - fineData[ix + 1][iz + 1]) + (1 - v) * (fineData[ix + 1][iz] - fineData[ix + 1][iz + 1]);
+    };
+    // Keep every obstacle / tyre line at 0.25 m. Gentle outer shoulders may use
+    // 0.50 m only after checking every omitted vertex differs by less than 8 mm.
+    var meshTolerance = 0.008;
+    for (var cx = 0; cx < SEG; cx++) for (var cz = 0; cz < SEG; cz++) {
+      if (!detailCells[cx][cz]) { detailCells[cx][cz] = 1; continue; }
+      var nt = nearestTrail((cx + 0.5) * ES - HALF, HALF - (cz + 0.5) * ES);
+      var level = nt.d < trackHalfWidth(nt.along) + ES * Math.SQRT1_2 ? DETAIL : DETAIL / 2;
+      if (level < DETAIL) for (var ix = 0; ix < DETAIL && level < DETAIL; ix += 2) for (var iz = 0; iz < DETAIL; iz += 2) {
+        var x = cx * DETAIL + ix, z = cz * DETAIL + iz;
+        var a = fineData[x][z], b = fineData[x + 2][z], c = fineData[x][z + 2], d = fineData[x + 2][z + 2];
+        var error = Math.max(Math.abs(fineData[x + 1][z] - (a + b) / 2), Math.abs(fineData[x][z + 1] - (a + c) / 2),
+          Math.abs(fineData[x + 1][z + 1] - (b + c) / 2), Math.abs(fineData[x + 2][z + 1] - (b + d) / 2), Math.abs(fineData[x + 1][z + 2] - (c + d) / 2));
+        if (error > meshTolerance) { level = DETAIL; break; }
+      }
+      detailCells[cx][cz] = level;
+    }
+    // Bogs before the three ramped climbs, plus three measured dip bottoms.
+    obstacles.filter(function (ob) { return ob.type === "ramp"; }).forEach(function (ob) {
+      MUD_ZONES.push({ start: ob.along - 17, end: ob.along - 7, reason: "ramp approach" });
+    });
+    var dips = [];
+    for (var at = 25; at < routeLength - 25; at += 2) {
+      var p = routePoint(at), a = routePoint(at - 10), b = routePoint(at + 15);
+      var h = finalH(p.x, p.z), drop = finalH(a.x, a.z) - h, rise = finalH(b.x, b.z) - h;
+      if (drop > 0.10 && rise > 0.20) dips.push({ along: at, score: drop + rise });
+    }
+    dips.sort(function (a, b) { return b.score - a.score; });
+    for (var i = 0; i < dips.length && MUD_ZONES.length < 6; i++) {
+      var dip = dips[i];
+      if (MUD_ZONES.some(function (zone) { return Math.abs(dip.along - (zone.start + zone.end) / 2) < 60; })) continue;
+      MUD_ZONES.push({ start: dip.along - 5, end: dip.along + 6, reason: "dip before climb" });
+    }
+    minY = Infinity; maxY = -Infinity;
+    fineData.forEach(function (row) { for (var i = 0; i < row.length; i++) { minY = Math.min(minY, row[i]); maxY = Math.max(maxY, row[i]); } });
+    trailY = TRAIL.map(function (p) { return finalH(p[0], p[1]); });
+    // Reserved bits: 2 = terrain, 4 = queries (never assigned to physical bodies).
+    // Cannon 0.6.2 rayTest uses group/mask -1, so wheel rays still see this body.
+    // Ordinary bodies use group 1: no shape can hit the heightfield's prism sides.
+    var hfBody = new CANNON.Body({ mass: 0, material: roadMat,
+      collisionFilterGroup: 2, collisionFilterMask: 4 });
+    hfBody.addShape(new CANNON.Heightfield(fineData, { elementSize: FINE_ES }));
     hfBody.quaternion.setFromEuler(-Math.PI / 2, 0, 0);
     hfBody.position.set(OX - HALF, 0, HALF);
     var bodies = [hfBody];
@@ -1897,36 +2091,39 @@
     /* world-space ground height (for spawn / respawn / props) */
     function groundY(wx, wz) { return finalH(wx - OX, wz); }
 
-    /* ---- terrain mesh: displaced plane, vertex-coloured ---- */
+    /* Adaptive render cells use the identical heightfield values and diagonals.
+       The corridor/obstacles are 0.25 m; checked shoulders 0.50 m; scenery 3.5 m. */
     var grp = new THREE.Group(); grp.visible = false;
-    var geo = new THREE.PlaneGeometry(SIZE, SIZE, SEG, SEG);
-    geo.rotateX(-Math.PI / 2);
-    // Match Cannon's cell diagonal as well as its heights: no hidden terrain lips.
-    var terrainIndices = [];
-    for (var row = 0; row < SEG; row++) for (var column = 0; column < SEG; column++) {
-      var a = row * (SEG + 1) + column, b = a + SEG + 1;
-      terrainIndices.push(a, b, b + 1, a, b + 1, a + 1);
-    }
-    geo.setIndex(terrainIndices);
-    var pos = geo.attributes.position, col = [];
+    var positions = [], colors = [], uvs = [], indices = [];
     var cGrass = new THREE.Color(0x4f6a37), cDirt = new THREE.Color(0x7a5a3c),
-        cMud = new THREE.Color(0x4b3826), cRock = new THREE.Color(0x6d6b66);
-    for (var vi = 0; vi < pos.count; vi++) {
-      var lx = pos.getX(vi), lz = pos.getZ(vi), hy = finalH(lx, lz);
-      pos.setY(vi, hy);
-      var nt = nearestTrail(lx, lz);
-      var slope = Math.abs(finalH(lx + 2, lz) - finalH(lx - 2, lz)) + Math.abs(finalH(lx, lz + 2) - finalH(lx, lz - 2));
-      var c = cGrass.clone();
-      var mud = mudAt(lx, lz);
-      if (nt.d < 6) c.copy(cDirt);
-      else if (nt.d < 16) c.lerp(cDirt, 1 - (nt.d - 6) / 10);
-      if (mud > 0.05) c.lerp(cMud, mud);
-      if (slope > 3.4) c.lerp(cRock, Math.min(1, (slope - 3.4) / 6));
-      c.offsetHSL(0, 0, (noise(lx * 0.3, lz * 0.3, 2) - 0.5) * 0.08);
-      col.push(c.r, c.g, c.b);
+        cMud = new THREE.Color(0x4b3826), cRock = new THREE.Color(0x6d6b66), paintColor = cGrass.clone();
+    for (var cx = 0; cx < SEG; cx++) for (var cz = 0; cz < SEG; cz++) {
+      var steps = detailCells[cx][cz], first = positions.length / 3;
+      var cellX = (cx + 0.5) * ES - HALF, cellZ = HALF - (cz + 0.5) * ES;
+      var cellRocks = obstacles.filter(function (ob) {
+        return (ob.type === "ledge" || ob.type === "ramp") && Math.abs(cellX - ob.x) < ob.radius + ES && Math.abs(cellZ - ob.z) < ob.radius + ES;
+      });
+      for (var ix = 0; ix <= steps; ix++) for (var iz = 0; iz <= steps; iz++) {
+        var lx = (cx + ix / steps) * ES - HALF, lz = HALF - (cz + iz / steps) * ES;
+        var hy = finalH(lx, lz), nt = nearestTrail(lx, lz), road = trackHalfWidth(nt.along);
+        positions.push(lx, hy, lz); uvs.push((lx + HALF) / SIZE, (lz + HALF) / SIZE);
+        var c = paintColor.copy(cGrass), dirt = 1 - ease((nt.d - road + 0.15) / 0.65);
+        c.lerp(cDirt, dirt); c.lerp(cMud, mudAtNearest(nt));
+        if (nt.d < road + 0.2) for (var oi = 0; oi < cellRocks.length; oi++) {
+          if (Math.abs(obstacleHeight(cellRocks[oi], lx, lz)) > 0.035) c.lerp(cRock, 0.85);
+        }
+        colors.push(c.r, c.g, c.b);
+      }
+      for (var ix = 0; ix < steps; ix++) for (var iz = 0; iz < steps; iz++) {
+        var a = first + ix * (steps + 1) + iz, b = a + steps + 1;
+        indices.push(a, b, a + 1, b, b + 1, a + 1);
+      }
     }
-    geo.setAttribute("color", new THREE.Float32BufferAttribute(col, 3));
-    geo.computeVertexNormals();
+    var geo = new THREE.BufferGeometry();
+    geo.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+    geo.setAttribute("color", new THREE.Float32BufferAttribute(colors, 3));
+    geo.setAttribute("uv", new THREE.Float32BufferAttribute(uvs, 2));
+    geo.setIndex(indices); geo.computeVertexNormals();
     function dirtTexture() {
       var canvas = document.createElement("canvas"); canvas.width = canvas.height = 512;
       var ctx = canvas.getContext("2d");
@@ -1967,21 +2164,21 @@
       while ((nP + nO) < MAXT * 2 - 2 && tries < 90000) {
         tries++;
         var x = (Math.random() - 0.5) * SIZE * 0.97, z = (Math.random() - 0.5) * SIZE * 0.97;
-        if (tries % 3 === 0) {
-          var ti = Math.floor(Math.random() * (TLEN - 1)), ta = TRAIL[ti], tb = TRAIL[ti + 1];
-          var len = Math.hypot(tb[0] - ta[0], tb[1] - ta[1]) || 1;
-          var offset = (Math.random() < 0.5 ? -1 : 1) * (7.2 + Math.random() * 7);
-          x = ta[0] - (tb[1] - ta[1]) / len * offset; z = ta[1] + (tb[0] - ta[0]) / len * offset;
+        if (tries % 2 === 0) {
+          var along = ((tries / 2) * 4) % routeLength, ta = routePoint(along), tb = routePoint(along + 0.5);
+          var len = Math.hypot(tb.x - ta.x, tb.z - ta.z) || 1;
+          var offset = (Math.random() < 0.5 ? -1 : 1) * (trackHalfWidth(along) + 1.2 + Math.random() * 0.4);
+          x = ta.x - (tb.z - ta.z) / len * offset; z = ta.z + (tb.x - ta.x) / len * offset;
         }
-        var nt = nearestTrail(x, z);
-        if (nt.d < 7) continue;
+        var nt = nearestTrail(x, z), treeEdge = trackHalfWidth(nt.along) + 1.0;
+        if (nt.d < treeEdge) continue; // 2.5 m normally, 3.5 m at passing places; no tree bodies
         var slope = Math.abs(finalH(x + 2, z) - finalH(x - 2, z)) + Math.abs(finalH(x, z + 2) - finalH(x, z - 2));
         if (slope > 9) continue;                         // no trees on cliffs
-        var dens = nt.d < 15 ? 0.98 : 0.55 + Math.min(0.4, slope * 0.06) + (noise(x * 0.02, z * 0.02, 3) - 0.3) * 0.9;
+        var dens = nt.d < treeEdge + 4 ? 0.995 : 0.55 + Math.min(0.4, slope * 0.06) + (noise(x * 0.02, z * 0.02, 3) - 0.3) * 0.9;
         if (Math.random() > dens) continue;
         var y = finalH(x, z);
         var pine1 = Math.random() < 0.62;
-        var s = 0.7 + Math.random() * (nt.d < 8 ? 0.4 : 0.8);
+        var s = 0.7 + Math.random() * (nt.d < treeEdge + 1 ? 0.4 : 0.8);
         q.setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.random() * 6.28);
         if (pine1 && nP < MAXT) {
           p.set(OX + x, y + 1.7 * s, z); sc.set(s, s, s); m.compose(p, q, sc); trunk.setMatrixAt(nT++, m);
@@ -2008,18 +2205,20 @@
       var n = 0, ns = 0;
       for (var t = 0; t < TLEN; t += 2) {
         for (var r = 0; r < 3 && n < 1200; r++) {
-          var ang = Math.random() * 6.28, dist = 10 + Math.random() * 30;
+          var ang = Math.random() * 6.28, dist = 3 + Math.random() * 15;
           var x = TRAIL[t][0] + Math.cos(ang) * dist, z = TRAIL[t][1] + Math.sin(ang) * dist;
           var s = 0.4 + Math.random() * 2.8;
-          if (nearestTrail(x, z).d < Math.max(9, 6.5 + s)) continue; // clear the entire boulder
+          var nt = nearestTrail(x, z);
+          if (nt.d < trackHalfWidth(nt.along) + 0.5 + s) continue; // full boulder outside the usable track
           q.setFromEuler(new THREE.Euler(Math.random(), Math.random() * 6.28, Math.random()));
           p.set(OX + x, finalH(x, z) + s * 0.25, z); sc.set(s, s * 0.82, s);
           m.compose(p, q, sc); rock.setMatrixAt(n++, m);
         }
         for (var r2 = 0; r2 < 3 && ns < 1400; r2++) {
-          var a2 = Math.random() * 6.28, d2 = 8 + Math.random() * 6;   // pebbles line the trail edge
+          var a2 = Math.random() * 6.28, d2 = 2.8 + Math.random() * 3;   // pebbles line the trail edge
           var x2 = TRAIL[t][0] + Math.cos(a2) * d2, z2 = TRAIL[t][1] + Math.sin(a2) * d2;
-          if (nearestTrail(x2, z2).d < 7.5) continue;
+          var nt2 = nearestTrail(x2, z2);
+          if (nt2.d < trackHalfWidth(nt2.along) + 0.9) continue;
           var s2 = 0.4 + Math.random() * 1.1;
           q.setFromEuler(new THREE.Euler(Math.random(), Math.random() * 6.28, Math.random()));
           p.set(OX + x2, finalH(x2, z2) + 0.1, z2); sc.set(s2, s2, s2);
@@ -2042,8 +2241,9 @@
         var dx = b[0] - a[0], dz = b[1] - a[1], dl = Math.hypot(dx, dz) || 1;
         var nx = -dz / dl, nz = dx / dl;
         [-1, 1].forEach(function (side) {
-          var px = a[0] + nx * side * 7.0, pz = a[1] + nz * side * 7.0, gy = finalH(px, pz);
-          if (nearestTrail(px, pz).d < 6.7) return;
+          var edge = trackHalfWidth(arc[t]) + 0.55;
+          var px = a[0] + nx * side * edge, pz = a[1] + nz * side * edge, gy = finalH(px, pz);
+          var nt = nearestTrail(px, pz); if (nt.d < trackHalfWidth(nt.along) + 0.3) return;
           var post = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.08, 1.4, 6), postM);
           post.position.set(OX + px, gy + 0.7, pz); post.castShadow = true; grp.add(post);
           var tip = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.12, 0.34, 6), tipM);
@@ -2052,7 +2252,8 @@
         if (t % 66 === 6) {
           var lx = a[0] + nx * (10 + Math.random() * 6), lz = a[1] + nz * (Math.random() < 0.5 ? -1 : 1) * (10 + Math.random() * 6);
           var logLength = 5 + Math.random() * 4;
-          if (nearestTrail(lx, lz).d < 6.5 + logLength / 2 + 0.5) continue;
+          var logNear = nearestTrail(lx, lz);
+          if (logNear.d < trackHalfWidth(logNear.along) + logLength / 2 + 0.5) continue;
           var log = new THREE.Mesh(new THREE.CylinderGeometry(0.4, 0.5, logLength, 7), logM);
           log.rotation.z = Math.PI / 2; log.rotation.y = Math.random() * 6.28;
           log.position.set(OX + lx, finalH(lx, lz) + 0.4, lz); log.castShadow = true; grp.add(log);
@@ -2108,6 +2309,8 @@
 
     var startYaw = Math.atan2(TRAIL[3][0] - TRAIL[0][0], TRAIL[3][1] - TRAIL[0][1]);
     return {
+      technical: { obstacles: obstacles, passingPlaces: passingPlaces, mudZones: MUD_ZONES,
+        resolution: FINE_ES, shoulderMeshTolerance: meshTolerance, routeLength: routeLength, routePoint: routePoint, trackHalfWidth: trackHalfWidth },
       OX: OX, halfSize: HALF, group: grp, bodies: bodies, trail: TRAIL, groundY: groundY,
       normalAt: function (wx, wz) {
         var lx = wx - OX;
@@ -2134,6 +2337,7 @@
   /* collision box sits above the body origin → centre of mass is low → the car
      leans and dives but strongly resists rolling over (like a real car). The box
      and nose/tail spheres are rebuilt per car by setChassisShapes(). */
+  var bellyProbes = [];
   function setChassisShapes(cfg) {
     cfg = cfg || CHASSIS_DEFAULT;
     chassisBody.shapes.length = 0;
@@ -2143,6 +2347,20 @@
     cfg.sph.forEach(function (z) {
       chassisBody.addShape(new CANNON.Sphere(cfg.sphR), new CANNON.Vec3(0, cfg.sphY, z));
     });
+    // Cover the belly, bumper bottoms, and roof corners (also support a rollover).
+    bellyProbes.length = 0;
+    [-1, 0, 1].forEach(function (x) {
+      [-1, -2 / 3, -1 / 3, 0, 1 / 3, 2 / 3, 1].forEach(function (z) {
+        bellyProbes.push(new CANNON.Vec3(x * cfg.box[0], cfg.boxY - cfg.box[1], z * cfg.box[2]));
+      });
+      cfg.sph.forEach(function (z) {
+        bellyProbes.push(new CANNON.Vec3(x * cfg.sphR * 0.7,
+          cfg.sphY - cfg.sphR * Math.sqrt(1 - x * x * 0.49), z));
+      });
+    });
+    [-1, 1].forEach(function (x) { [-1, 1].forEach(function (z) {
+      bellyProbes.push(new CANNON.Vec3(x * cfg.box[0], cfg.boxY + cfg.box[1], z * cfg.box[2]));
+    }); });
     chassisBody.updateBoundingRadius();
     chassisBody.updateMassProperties();
     CH = { x: cfg.box[0], y: cfg.box[1], z: cfg.box[2] };
@@ -2898,6 +3116,43 @@
     resetCar();
   }
 
+  /* Ray-only chassis support. Vertical forces cannot create a cell-side wall.
+     Runs per fixed physics step, including direct world.step calls in __DBG.
+     Point damping produces pitch/roll torque; load-limited sliding friction lets
+     the belly scrape/high-centre without inventing a horizontal collision face. */
+  var terrainSupport = { probes: bellyProbes, contacts: 0, maxPenetration: 0, totalLift: 0 };
+  var bellyPoint = new CANNON.Vec3(), bellyVelocity = new CANNON.Vec3();
+  var bellyFrom = new CANNON.Vec3(), bellyTo = new CANNON.Vec3(), bellyForce = new CANNON.Vec3();
+  var bellyHit = new CANNON.RaycastResult();
+  function supportOffroadChassis() {
+    terrainSupport.contacts = 0; terrainSupport.maxPenetration = 0; terrainSupport.totalLift = 0;
+    if (MODE !== "offroad") return;
+    var mass = chassisBody.mass, dt = world.dt || 1 / 60;
+    for (var i = 0; i < bellyProbes.length; i++) {
+      chassisBody.pointToWorldFrame(bellyProbes[i], bellyPoint);
+      // Start above the entire terrain, so deeply embedded/overturned probes
+      // still find the TOP surface; never query from inside a Cannon pillar.
+      bellyFrom.set(bellyPoint.x, OFFROAD.maxY + 2, bellyPoint.z);
+      bellyTo.set(bellyPoint.x, Math.min(bellyPoint.y - 0.02, OFFROAD.minY - 2), bellyPoint.z);
+      world.raycastClosest(bellyFrom, bellyTo, { collisionFilterGroup: 4,
+        collisionFilterMask: 2, skipBackfaces: true }, bellyHit);
+      if (!bellyHit.hasHit) continue;
+      var depth = bellyHit.hitPointWorld.y - bellyPoint.y;
+      if (depth <= 0) continue;
+      chassisBody.getVelocityAtWorldPoint(bellyPoint, bellyVelocity);
+      var lift = clamp(mass * (70 * depth - 3 * bellyVelocity.y), 0, mass * 9.82 * 1.5);
+      var speed = Math.sqrt(bellyVelocity.x * bellyVelocity.x + bellyVelocity.z * bellyVelocity.z);
+      var drag = speed > 0 ? Math.min(0.22 * lift / speed, mass / (bellyProbes.length * dt)) : 0;
+      bellyForce.set(-bellyVelocity.x * drag, lift, -bellyVelocity.z * drag);
+      // cannon 0.6.2 applyForce takes a WORLD point (not a relative offset).
+      chassisBody.applyForce(bellyForce, bellyPoint);
+      terrainSupport.contacts++;
+      terrainSupport.maxPenetration = Math.max(terrainSupport.maxPenetration, depth);
+      terrainSupport.totalLift += lift;
+    }
+  }
+  world.addEventListener("preStep", supportOffroadChassis);
+
   /* ================= engine sound (WebAudio) ================= */
   var engineSound = (function () {
     var ctx, master, gain, lp, o1, o2, o3, started = false, muted = false;
@@ -3316,6 +3571,9 @@
   try {
     Object.defineProperty(window.__DBG, "carMesh", { get: function () { return carMesh; } });
     window.__DBG.applyCar = applyCar;
+    window.__DBG.cars = CARS;
+    window.__DBG.terrainSupport = terrainSupport;
+    window.__DBG.supportOffroadChassis = supportOffroadChassis;
     window.__DBG.updateSuspension = updateSuspension;
     Object.defineProperty(window.__DBG, "suspGroup", { get: function () { return suspParts ? suspParts.group : null; } });
     Object.defineProperty(window.__DBG, "currentCar", { get: function () { return currentCar; } });
