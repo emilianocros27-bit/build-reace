@@ -1931,10 +1931,12 @@
     /* Discrete technical sections. Their footprint never overlaps another section;
        ordinary trail and all eight passing places stay free of constructed obstacles. */
     var obstacles = [], requested = [];
-    for (var si = 0; si < 24; si++) requested.push({ type: "ledge", height: 0.15 + (si % 4) * 0.05, length: 5, radius: 17 });
-    for (var ri = 0; ri < 6; ri++) requested.push({ type: "ruts", depth: 0.15 + (ri % 3) * 0.05, length: 14, radius: 10 });
-    for (var wi = 0; wi < 3; wi++) requested.push({ type: "whoops", height: 0.24, count: 4, wavelength: 4, length: 16, radius: 18 });
-    [15, 18, 22, 25].forEach(function (angle) { requested.push({ type: "camber", degrees: angle, length: 18, radius: 18 }); });
+    for (var si = 0; si < 24; si++) requested.push({
+      type: si % 6 === 3 ? "rockgarden" : si % 6 === 4 ? "pothole" : si % 6 === 5 ? "crossditch" : "ledge",
+      height: 0.4 + (si % 5) * 0.1, depth: 0.45 + (si % 3) * 0.1, length: 8, radius: 17 });
+    for (var ri = 0; ri < 6; ri++) requested.push({ type: "ruts", depth: 0.40 + (ri % 3) * 0.10, length: 14, radius: 10 });
+    for (var wi = 0; wi < 3; wi++) requested.push({ type: "whoops", height: 0.48, count: 3, wavelength: 16 / 3, length: 16, radius: 18 });
+    [18, 23, 27, 30].forEach(function (angle) { requested.push({ type: "camber", degrees: angle, length: 18, radius: 18 }); });
     [0.50, 0.65, 0.80].forEach(function (height) { requested.push({ type: "ramp", height: height, length: 16, radius: 20 }); });
     // Place the largest footprints first; distribute the remaining ledges in the gaps.
     requested.sort(function (a, b) { return b.radius - a.radius; });
@@ -1964,22 +1966,36 @@
       var t = dx * ob.tx + dz * ob.tz, u = -dx * ob.tz + dz * ob.tx, side = Math.abs(u);
       var lateral = 1 - ease((side - 1.5) / 14), h = 0;
       if (ob.type === "ledge") {
-        // One tyre-sized rise with a one-metre bevel, then a broad, gentle descent.
-        h = ob.height * ease((t + 2.5) / 1) * (1 - ease((t - 0.3) / 2.2));
+        // Oblique rock shelf: front/rear and left/right axles crest separately.
+        var skew = t + u * 0.65;
+        h = ob.height * ease((skew + 4) / 2.1) * (1 - ease((skew - 0.2) / 3.8));
+      } else if (ob.type === "pothole") {
+        var basin = Math.max(0, 1 - Math.pow(t / 3.6, 2) - Math.pow((u - 0.35) / 1.6, 2));
+        return -ob.depth * basin * basin;
+      } else if (ob.type === "crossditch") {
+        var trench = Math.max(0, 1 - Math.pow((t + u * 1.2) / 2, 2));
+        h = -ob.depth * trench * trench;
+      } else if (ob.type === "rockgarden") {
+        // Rounded exposed stone is part of the same raycast terrain, never a box.
+        for (var rock = 0; rock < 3; rock++) {
+          var rx = (rock - 1) * 2.1, rz = rock % 2 ? 0.6 : -0.6;
+          var bump = Math.max(0, 1 - Math.pow((t - rx) / 1.55, 2) - Math.pow((u - rz) / 1.15, 2));
+          h = Math.max(h, ob.height * bump * bump);
+        }
       } else if (ob.type === "ramp") {
-        // Even the 0.8 m set piece has a 5 m approach and a 5 m exit, never a square wall.
-        h = ob.height * ease((t + 8) / 5) * (1 - ease((t - 3) / 5));
+        // A 3.2 m climbing face and a 5 m exit: a physical ramp, never a vertical cell wall.
+        h = ob.height * ease((t + 8) / 3.2) * (1 - ease((t - 3) / 5));
       } else if (ob.type === "ruts") {
         var groove = Math.max(0, 1 - Math.pow((Math.abs(u) - 0.80) / 0.50, 2));
         // A scuffed centre ridge gives the long belly clearance entering deep ruts.
         var centreRelief = 0.06 * (1 - ease(side / 0.65));
-        return -(ob.depth * groove * groove + centreRelief) * ease((t + 7) / 3) * (1 - ease((t - 4) / 3));
+        return -(ob.depth * (0.68 + 0.32 * Math.sin(t * 0.48 + (u > 0 ? 0 : Math.PI))) * groove * groove + centreRelief) * ease((t + 7) / 3) * (1 - ease((t - 4) / 3));
       } else if (ob.type === "whoops") {
         var phase = (t + 8) / ob.wavelength;
         if (t < -8 || t > 8) return 0;
         h = ob.height * 0.5 * (1 - Math.cos(phase * Math.PI * 2));
       } else if (ob.type === "camber") {
-        // Full 15..25 degree tilt under the wheel tracks, rounding flat at the verge.
+        // Full 18..30 degree tilt under the wheel tracks, rounding flat at the verge.
         var profile = side <= 1 ? side : side < 1.5 ? 1 + (side - 1) - Math.pow(side - 1, 2) : 1.25;
         h = Math.sign(u) * Math.tan(ob.degrees * Math.PI / 180) * profile * ease((t + 9) / 4) * (1 - ease((t - 5) / 4));
       }
@@ -1993,6 +2009,25 @@
       var fineRow = new Float32Array(FINE_SEG + 1), x = gx * FINE_ES - HALF;
       for (var gz = 0; gz <= FINE_SEG; gz++) fineRow[gz] = gradedH(x, HALF - gz * FINE_ES);
       fineData.push(fineRow);
+    }
+    // Continuous multi-scale washboard and cross-axle undulation. World-space
+    // phases stay continuous at switchbacks and crossings (no nearest-segment seam).
+    function undulation(x, z) {
+      return 0.52 * Math.sin(x * 0.105 + z * 0.071) + 0.33 * Math.sin(x * 0.064 - z * 0.137 + 1.8)
+        + 0.14 * Math.sin(x * 0.54 + z * 0.37 + 0.8) + 0.10 * Math.sin(x * 0.31 - z * 0.68)
+        + 0.023 * Math.sin(x * 2.8 + z * 1.9) + 0.018 * Math.sin(x * 1.7 - z * 3.2 + 0.6);
+    }
+    // Restrict expensive fine queries to corridor cells, blending continuously
+    // through the verge. Every driving metre retains the short and medium waves.
+    for (var cx = 0; cx < SEG; cx++) for (var cz = 0; cz < SEG; cz++) {
+      var wx = (cx + 0.5) * ES - HALF, wz = HALF - (cz + 0.5) * ES;
+      if (nearestTrail(wx, wz).d > 13) continue;
+      for (var ix = 0; ix < DETAIL; ix++) for (var iz = 0; iz < DETAIL; iz++) {
+        var gx = cx * DETAIL + ix, gz = cz * DETAIL + iz;
+        var x = gx * FINE_ES - HALF, z = HALF - gz * FINE_ES, nt = nearestTrail(x, z);
+        var fade = 1 - ease((nt.d - trackHalfWidth(nt.along) - 1) / 7);
+        fineData[gx][gz] += undulation(x, z) * fade;
+      }
     }
     for (var cx = 0; cx < SEG; cx++) {
       detailCells[cx] = [];
@@ -2157,6 +2192,7 @@
     var terrain = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ map: dirtTexture(), vertexColors: true, roughness: 1, metalness: 0 }));
     terrain.position.x = OX; terrain.receiveShadow = true; grp.add(terrain);
 
+    var treeRecords = [];
     /* ---- forest: dense instanced pines + oaks, off the trail, denser on slopes ---- */
     (function () {
       var trunkG = new THREE.CylinderGeometry(0.28, 0.42, 3.4, 5);
@@ -2171,38 +2207,93 @@
       var oak = new THREE.InstancedMesh(oakG, oakM, MAXT);
       trunk.castShadow = pine.castShadow = oak.castShadow = true;
       var m = new THREE.Matrix4(), q = new THREE.Quaternion(), sc = new THREE.Vector3(), p = new THREE.Vector3();
-      var nP = 0, nO = 0, nT = 0, tries = 0;
+      var nP = 0, nO = 0, nT = 0, tries = 0, treeSeed = 91427;
+      function treeRandom() { treeSeed = (Math.imul(treeSeed, 1664525) + 1013904223) >>> 0; return treeSeed / 4294967296; }
       while ((nP + nO) < MAXT * 2 - 2 && tries < 90000) {
         tries++;
-        var x = (Math.random() - 0.5) * SIZE * 0.97, z = (Math.random() - 0.5) * SIZE * 0.97;
+        var x = (treeRandom() - 0.5) * SIZE * 0.97, z = (treeRandom() - 0.5) * SIZE * 0.97;
         if (tries % 2 === 0) {
           var along = ((tries / 2) * 4) % routeLength, ta = routePoint(along), tb = routePoint(along + 0.5);
           var len = Math.hypot(tb.x - ta.x, tb.z - ta.z) || 1;
-          var offset = (Math.random() < 0.5 ? -1 : 1) * (trackHalfWidth(along) + 1.2 + Math.random() * 0.4);
+          var offset = (treeRandom() < 0.5 ? -1 : 1) * (trackHalfWidth(along) + 1.2 + treeRandom() * 0.4);
           x = ta.x - (tb.z - ta.z) / len * offset; z = ta.z + (tb.x - ta.x) / len * offset;
         }
         var nt = nearestTrail(x, z), treeEdge = trackHalfWidth(nt.along) + 1.0;
-        if (nt.d < treeEdge) continue; // 2.5 m normally, 3.5 m at passing places; no tree bodies
+        if (nt.d < treeEdge) continue; // keep visible trunks clear of the driving corridor
         var slope = Math.abs(finalH(x + 2, z) - finalH(x - 2, z)) + Math.abs(finalH(x, z + 2) - finalH(x, z - 2));
         if (slope > 9) continue;                         // no trees on cliffs
         var dens = nt.d < treeEdge + 4 ? 0.995 : 0.55 + Math.min(0.4, slope * 0.06) + (noise(x * 0.02, z * 0.02, 3) - 0.3) * 0.9;
-        if (Math.random() > dens) continue;
+        if (treeRandom() > dens) continue;
         var y = finalH(x, z);
-        var pine1 = Math.random() < 0.62;
-        var s = 0.7 + Math.random() * (nt.d < treeEdge + 1 ? 0.4 : 0.8);
-        q.setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.random() * 6.28);
+        var pine1 = treeRandom() < 0.62;
+        var s = 0.7 + treeRandom() * (nt.d < treeEdge + 1 ? 0.4 : 0.8);
+        q.setFromAxisAngle(new THREE.Vector3(0, 1, 0), treeRandom() * 6.28);
+        var trunkIndex = nT;
         if (pine1 && nP < MAXT) {
           p.set(OX + x, y + 1.7 * s, z); sc.set(s, s, s); m.compose(p, q, sc); trunk.setMatrixAt(nT++, m);
           p.set(OX + x, y + 4.6 * s, z); m.compose(p, q, sc); pine.setMatrixAt(nP, m); nP++;
         } else if (nO < MAXT) {
-          p.set(OX + x, y + 1.6 * s, z); sc.set(s, s, s); q.setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.random() * 6.28);
+          p.set(OX + x, y + 1.6 * s, z); sc.set(s, s, s); q.setFromAxisAngle(new THREE.Vector3(0, 1, 0), treeRandom() * 6.28);
           m.compose(p, q, sc); trunk.setMatrixAt(nT++, m);
           p.set(OX + x, y + 3.6 * s, z); m.compose(p, q, sc); oak.setMatrixAt(nO, m); nO++;
         }
+        if (nT > trunkIndex) treeRecords.push({ x: OX + x, y: y + (pine1 && nP <= MAXT ? 1.7 : 1.6) * s,
+          z: z, scale: s, instance: trunkIndex, mesh: trunk });
       }
+      // Read the actual instance transform: collider and visible trunk share the
+      // exact centre even when an oak is used after the pine batch fills up.
+      treeRecords.forEach(function (tree) {
+        trunk.getMatrixAt(tree.instance, m); tree.y = m.elements[13];
+      });
+      trunk.name = "offroad-trunks";
       trunk.count = nT; pine.count = nP; oak.count = nO;
       trunk.instanceMatrix.needsUpdate = pine.instanceMatrix.needsUpdate = oak.instanceMatrix.needsUpdate = true;
       grp.add(trunk); grp.add(pine); grp.add(oak);
+    })();
+
+    // Stream only nearby trunk cylinders. Group 8 is physical scenery, NEVER
+    // the terrain's query-only group 4. No canopy boxes, no offscreen spare bodies.
+    var treeCollisions = (function () {
+      var bins = {}, cellSize = 16, radius = 22, pool = [], active = new Map(), lastX = Infinity, lastZ = Infinity;
+      var treeMat = new CANNON.Material("tree-trunk");
+      treeRecords.forEach(function (tree, i) {
+        var key = Math.floor(tree.x / cellSize) + "," + Math.floor(tree.z / cellSize);
+        if (!bins[key]) bins[key] = []; bins[key].push(i);
+      });
+      function release(id, body) { world.removeBody(body); active.delete(id); pool.push(body); }
+      function update(x, z, force) {
+        if (!force && Math.hypot(x - lastX, z - lastZ) < 2) return;
+        lastX = x; lastZ = z;
+        var nearby = [];
+        for (var bx = Math.floor((x - radius) / cellSize); bx <= Math.floor((x + radius) / cellSize); bx++)
+          for (var bz = Math.floor((z - radius) / cellSize); bz <= Math.floor((z + radius) / cellSize); bz++) {
+            var list = bins[bx + "," + bz] || [];
+            for (var j = 0; j < list.length; j++) {
+              var tree = treeRecords[list[j]], distance = Math.hypot(tree.x - x, tree.z - z);
+              if (distance < radius) nearby.push({ id: list[j], distance: distance });
+            }
+          }
+        nearby.sort(function (a, b) { return a.distance - b.distance; });
+        nearby.length = Math.min(nearby.length, 96);
+        var wanted = new Set(nearby.map(function (n) { return n.id; }));
+        active.forEach(function (body, id) { if (!wanted.has(id)) release(id, body); });
+        nearby.forEach(function (n) {
+          if (active.has(n.id)) return;
+          var tree = treeRecords[n.id], body = pool.pop() || new CANNON.Body({ mass: 0, material: treeMat,
+            collisionFilterGroup: 8, collisionFilterMask: 1 });
+          body.shapes.length = body.shapeOffsets.length = body.shapeOrientations.length = 0;
+          // Cylinder inscribed inside the narrowest section of the visible
+          // five-sided trunk; branches are deliberately non-solid.
+          var q = new CANNON.Quaternion(); q.setFromEuler(-Math.PI / 2, 0, 0);
+          body.addShape(new CANNON.Cylinder(0.22 * tree.scale, 0.22 * tree.scale, 3.25 * tree.scale, 8), new CANNON.Vec3(), q);
+          body.position.set(tree.x, tree.y, tree.z); body.aabbNeedsUpdate = true;
+          body.tree = tree; body.updateBoundingRadius(); body.computeAABB();
+          world.addBody(body); active.set(n.id, body);
+        });
+        world.broadphase.dirty = true;
+      }
+      function clear() { active.forEach(function (body, id) { release(id, body); }); lastX = lastZ = Infinity; }
+      return { update: update, clear: clear, active: active, records: treeRecords, material: treeMat, radius: radius, maxBodies: 96 };
     })();
 
     /* ---- rocks + boulders BESIDE the trail (never on the drivable line) ---- */
@@ -2348,7 +2439,7 @@
 
     var startYaw = Math.atan2(TRAIL[3][0] - TRAIL[0][0], TRAIL[3][1] - TRAIL[0][1]);
     return {
-      horizon: horizon,
+      horizon: horizon, treeCollisions: treeCollisions,
       technical: { obstacles: obstacles, passingPlaces: passingPlaces, mudZones: MUD_ZONES,
         resolution: FINE_ES, shoulderMeshTolerance: meshTolerance, routeLength: routeLength, routePoint: routePoint, trackHalfWidth: trackHalfWidth },
       OX: OX, halfSize: HALF, group: grp, bodies: bodies, trail: TRAIL, groundY: groundY,
@@ -2436,13 +2527,15 @@
       phys: { mass: 170, peakTq: 36, limiter: 7000, final: 5.2, gears: [3.6, 2.25, 1.62, 1.26, 1.04, 0.87],
         dirtSlip: 1.05, dirtDrag: 90, rest: 0.42, travelF: 0.36, travelR: 0.30, rideDrop: 0 }, feel: {} },
     { id: "jeep", name: "JEEP", build: buildJeep, suspension: true,
-      tag: "Wrangler JL · 33 pulgadas · ejes rígidos y tracción 4x4.",
+      tag: "Wrangler JL Rubicon · 285 hp · manual de 6 marchas · reductora 4:1.",
       wheel: { front: { width: 0.285, radius: 0.42 }, rear: { width: 0.285, radius: 0.42 } },
       stats: { vel: 1, agarre: 3, manejo: 2 },
       colors: { body: 0xb63a2f, accent: 0x25282a, rim: 0x92989c },
-      phys: { mass: 235, awd: true, halfTrack: 0.80, halfWheelbase: 1.23,
-        dirtSlip: 1.75, dirtDrag: 30, peakTq: 52, limiter: 5000, final: 7.2, clutchLockSpeed: 1.8,
-        gears: [11.0, 7.75, 5.46, 3.84, 2.70, 1.90], rest: 0.60, travelF: 0.42, travelR: 0.42, rideDrop: 0.25,
+      phys: { mass: 2050, awd: true, halfTrack: 0.80, halfWheelbase: 1.23,
+        dirtSlip: 1.75, dirtDrag: 180, peakTq: 353, limiter: 6600, final: 4.10, lowRange: 4, clutchLockSpeed: 0.65,
+        ratedHp: 285, ratedPowerRpm: 6400, peakTorqueRpm: 4800, reverseRatio: 4.06,
+        // Wrangler JL 6MT ratios; 2050 kg is the simulation's loaded vehicle mass.
+        gears: [4.46, 2.61, 1.72, 1.25, 1.00, 0.84], rest: 0.60, travelF: 0.42, travelR: 0.42, rideDrop: 0.25,
         offroadSusp: { rest: 0.71, travel: 0.56, stiffness: 6.8, compression: 2.0, rebound: 1.25 },
         body: { box: [0.62, 0.145, 1.70], boxY: -0.255, sph: [1.77, -1.77], sphY: -0.05, sphR: 0.15 } },
       feel: { FRONT_GRIP: 1.04, REAR_GRIP: 1.06, FRONT_STIFF: 9, REAR_STIFF: 9,
@@ -3021,6 +3114,13 @@
   mapMenuEl.addEventListener("click", function (e) { if (e.target === mapMenuEl) { mapMenuEl.classList.add("gone"); mapMenuOpen = false; } });
   document.getElementById("btnMap").addEventListener("click", openMapMenu);
 
+  function jeepTorqueFactor(rpm) {
+    // Interpolated game curve through the supplied factory ratings. 285 hp at
+    // 6400 rpm is 317.1 Nm; the low-rpm branch is an approximation, not dyno data.
+    var powerTorque = 285 * 745.7 / (6400 * Math.PI / 30);
+    if (rpm <= 4800) return lerp(0.68, 1, clamp((rpm - 900) / 3900, 0, 1));
+    return lerp(1, powerTorque / 353, clamp((rpm - 4800) / 1600, 0, 1));
+  }
   function tqf(r) {
     if (r < 1000) return 0.60;
     if (r < 2000) return 0.60 + (r - 1000) / 1000 * 0.22;
@@ -3162,8 +3262,10 @@
   /* switch between the circuit and the off-road trail */
   function setMap(id) {
     if ((id === "offroad") === (MODE === "offroad")) { mapMenuOpen = false; return; }
+    if (MODE === "offroad") OFFROAD.treeCollisions.clear();
     MODE = id === "offroad" ? "offroad" : "circuit";
     configureSuspension();
+    chassisBody.collisionFilterMask = MODE === "offroad" ? 9 : 1;
     if (MODE === "offroad") {
       OFFROAD.bodies.forEach(function (b) { world.addBody(b); });
       OFFROAD.group.visible = true;
@@ -3232,6 +3334,16 @@
     }
   }
   world.addEventListener("preStep", supportOffroadChassis);
+  world.addContactMaterial(new CANNON.ContactMaterial(carMat, OFFROAD.treeCollisions.material,
+    { friction: 0.22, restitution: 0, contactEquationStiffness: 2e6, contactEquationRelaxation: 5 }));
+  // Stream before Cannon enters internalStep, never mutate the body list inside
+  // its preStep/integration loops. Direct __DBG.world.step gets the same behavior.
+  var cannonStep = world.step;
+  world.step = function () {
+    if (MODE === "offroad") OFFROAD.treeCollisions.update(chassisBody.position.x, chassisBody.position.z);
+    return cannonStep.apply(this, arguments);
+  };
+
 
   /* ================= engine sound (WebAudio) ================= */
   var engineSound = (function () {
@@ -3512,15 +3624,17 @@
     var fell = P.y < groundH - 16;
     var outsideMap = Math.abs(P.x - OFFROAD.OX) > OFFROAD.halfSize - 4 || Math.abs(P.z) > OFFROAD.halfSize - 4;
     var wayOff = nt.d > 60 && speed < 5;
-    var beached = down < 2 && speed < 2 && P.y > groundH + 0.35;
+    var beached = down === 0 && speed < 0.10 && P.y > groundH + 0.6;
     if (flipped || fell || wayOff || beached) stuckTimer += dt; else stuckTimer = 0;
     // Catch every sustained standstill, including upright two-wheel beaching.
     // Menus, the countdown and the finish screen are intentional stops.
     /* only rescue a driver who is actually asking for throttle — parking to
        look around should never teleport you. */
     var recoverSlow = !uiBlocking() && !start.active && !offroad.done && throttle > 0.15;
-    offroad.slowTimer = recoverSlow && speed * 3.6 < 1.5 ? offroad.slowTimer + dt : 0;
-    if (outsideMap || fell || stuckTimer > (beached ? 1.4 : 2.0) || offroad.slowTimer >= 3) {
+    // Low-range rock crawling at 1 km/h and a lifted wheel are valid driving.
+    // Rescue only a true standstill, not the technical maneuver itself.
+    offroad.slowTimer = recoverSlow && speed < 0.10 ? offroad.slowTimer + dt : 0;
+    if (outsideMap || fell || stuckTimer > (beached ? 8 : 2.0) || offroad.slowTimer >= 8) {
       stuckTimer = 0; offroad.slowTimer = 0;
       var ci = Math.max(0, Math.min(last - 3, offroad.checkpoint));
       var a = tw[ci], b = tw[ci + 3];
@@ -3658,6 +3772,7 @@
   var _prevPos = new THREE.Vector3(), _prevLat = 0;
 
   /* ================= main loop ================= */
+  var testInput = null;
   var cl = new THREE.Clock(), steerNow = 0, bootHidden = false, stuckTimer = 0, prevGrounded = 4;
   buildGarage();
   buildMapMenu();
@@ -3667,6 +3782,14 @@
     Object.defineProperty(window.__DBG, "carMesh", { get: function () { return carMesh; } });
     window.__DBG.applyCar = applyCar;
     window.__DBG.cars = CARS;
+    window.__DBG.jeepTorqueFactor = jeepTorqueFactor;
+    window.__DBG.chooseCar = chooseCar;
+    window.__DBG.lightsOut = lightsOut;
+    window.__DBG.setTestInput = function (input) { testInput = input; };
+    Object.defineProperty(window.__DBG, "drivetrain", { get: function () {
+      return { gear: gear, rpm: engineRPM, transfer: MODE === "offroad" ? (currentCar.phys.lowRange || 1) : 1,
+        speedKmh: groundSpeedKmh(), torqueNm: currentCar.id === "jeep" ? PEAK_TQ * jeepTorqueFactor(engineRPM) : PEAK_TQ * tqf(engineRPM) };
+    } });
     window.__DBG.sky = sky;
     window.__DBG.wheelTelemetry = wheelTelemetry;
     window.__DBG.captureWheelTelemetry = captureWheelTelemetry;
@@ -3693,12 +3816,15 @@
 
     /* ---- read input ---- */
     var wIn = (keys.KeyW || keys.ArrowUp || touch.gas) ? 1 : 0;
+    if (testInput) wIn = clamp(testInput.gas || 0, 0, 1);
     stepStart(raceDt, wIn);
     if (start.active || uiBlocking() || offroad.done) { wIn = 0; thr = 0; }
     var sIn = (keys.KeyS || keys.ArrowDown || touch.brake) ? 1 : 0;
+    if (testInput) sIn = clamp(testInput.brake || 0, 0, 1);
     var steerTarget = 0;
     if (keys.KeyA || keys.ArrowLeft || touch.left) steerTarget += 1;
     if (keys.KeyD || keys.ArrowRight || touch.right) steerTarget -= 1;
+    if (testInput) steerTarget = clamp(testInput.steer || 0, -1, 1);
     var handbrake = !!keys.KeyB;
     var clutchPedal = 1;
     if (uiBlocking()) { sIn = 0; steerTarget = 0; handbrake = false; thr = brk = steerNow = 0; driveFeel.steerDemand = driveFeel.counter = 0; }
@@ -3758,7 +3884,17 @@
     if (shiftCd > 0) shiftCd -= dt;
 
     /* ---- automatic gearbox: scale to each limiter; preserve exact 7000-rpm thresholds ---- */
-    if (mode === "AUTO" && shiftTimer <= 0 && shiftCd <= 0) {
+    if (mode === "AUTO" && shiftTimer <= 0 && shiftCd <= 0 && jeepWild) {
+      var crawl = OFFROAD.technical.obstacles.some(function (ob) {
+        return Math.hypot(chassisBody.position.x - OFFROAD.OX - ob.x, chassisBody.position.z - ob.z) < ob.length / 2 + 7;
+      });
+      var highestGear = crawl ? 1 : 3;
+      if (gear === 0 && wIn) gear = 1;
+      if (gear > highestGear) requestShift(-1, 0.5);
+      else if (gear > 1 && engineRPM < 1300) requestShift(-1, 0.5);
+      else if (gear > 0 && gear < highestGear && thr > 0.15 && engineRPM > 2600) requestShift(1, 0.5);
+    }
+    if (mode === "AUTO" && shiftTimer <= 0 && shiftCd <= 0 && !jeepWild) {
       if (gear === 0 && (wIn || fwdSpeed > 1)) gear = 1;
       if (gear >= 1) {
         if (gear < 6 && thr > 0.25 && engineRPM > (LIMITER === 7000 ? 6250 : LIMITER * 0.893)) requestShift(1, 0.32);
@@ -3772,7 +3908,9 @@
     }
 
     /* ---- rpm / clutch ---- */
-    var ratioAbs = gear > 0 ? GEARS[gear - 1] * FINAL : (gear < 0 ? REV_RATIO * FINAL : 0);
+    var transfer = currentCar.phys.lowRange && MODE === "offroad" ? currentCar.phys.lowRange : 1;
+    var reverse = currentCar.phys.reverseRatio || REV_RATIO;
+    var ratioAbs = (gear > 0 ? GEARS[gear - 1] * FINAL : (gear < 0 ? reverse * FINAL : 0)) * transfer;
     var wheelRPM = Math.abs(fwdSpeed) / CIRC * 60;
     var autoClutch, clutchLockSpeed = currentCar.phys.clutchLockSpeed || 5.5;
     var clutchRamp = currentCar.phys.clutchLockSpeed ? clutchLockSpeed - 0.2 : 5.0;
@@ -3802,7 +3940,7 @@
        car's nose is +Z, so a forward gear needs a NEGATIVE engine force. */
     var tractive = 0;
     if (gear !== 0 && thr > 0.02 && !fuelCut) {
-      tractive = PEAK_TQ * tqf(engineRPM) * thr * ratioAbs * EFF / R_WHEEL * clutch;
+      tractive = PEAK_TQ * (currentCar.id === "jeep" ? jeepTorqueFactor(engineRPM) : tqf(engineRPM)) * thr * ratioAbs * EFF / R_WHEEL * clutch;
     }
     if (gear < 0 && fwdSpeed < -7) tractive = 0;                 // reverse speed cap
     /* clamp to what the driven tyres can actually put down — stops the grip/slip
@@ -4076,7 +4214,7 @@
     speedo.set(groundSpeedKmh());
     elGas.style.width = (thr * 100).toFixed(0) + "%";
     elBrk.style.width = ((handbrake ? 1 : brk) * 100).toFixed(0) + "%";
-    elGear.textContent = gear < 0 ? "R" : gear === 0 ? "N" : gear;
+    elGear.textContent = (gear < 0 ? "R" : gear === 0 ? "N" : gear) + (jeepWild ? " L" : "");
     var shiftStage = mode !== "MANUAL" || gear <= 0 ? "idle" : engineRPM >= LIMITER - 200 ? "red" : engineRPM >= LIMITER - 600 ? "amber" : "green";
     elShift.setAttribute("data-stage", shiftStage);
     ["green", "amber", "red"].forEach(function (color) { elGear.classList.toggle("shift-" + color, shiftStage === color); });
